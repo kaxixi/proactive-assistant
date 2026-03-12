@@ -1,0 +1,10 @@
+.env
+credentials.json
+token.json
+preferences.json
+__pycache__/
+*.pyc
+venv/
+bot.log
+_debugging/
+.claude/

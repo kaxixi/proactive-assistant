@@ -1,0 +1,276 @@
+# Claudette — Proactive Personal Assistant
+
+A daily automation system that monitors your Gmail inbox and Google Calendar, generates a natural-language digest using Claude, and delivers it via Telegram. It learns your preferences over time and adapts to your timezone automatically.
+
+## What it does
+
+- **Morning digest** — Scans your inbox for emails you might be dropping (unreplied, aging, needs follow-up), lists today's and tomorrow's meetings, cross-references against your current priorities, and sends you a prioritized summary each morning via Telegram
+- **Interactive bot** — Reply to any message with questions or feedback. Search Google Drive and Dropbox by chatting naturally
+- **Learning system** — Give feedback ("don't flag newsletters from X") and it remembers for next time
+- **Timezone-aware** — Reads your Google Calendar timezone setting. Travel to a new timezone, update your calendar, and the digest follows you
+
+## Architecture
+
+```
+scheduler.py          — Entry point for cron runs. Checks timezone, orchestrates pipeline
+bot.py                — Telegram bot (long-polling). Commands, free-text, file attachments
+email_monitor.py      — Gmail scanning with importance heuristics and batch API
+calendar_digest.py    — Google Calendar: meetings, prep flags, timezone detection
+analyzer.py           — Claude API: generates the natural language digest
+priorities.py         — Fetches a published priorities list (e.g., Simplenote URL)
+preferences.py        — Learning system: rules, sender prefs, feedback log
+drive_search.py       — Google Drive file search
+dropbox_search.py     — Dropbox file search
+google_auth.py        — Shared Google OAuth2 (Gmail, Calendar, Drive)
+config.py             — Loads all config from .env
+```
+
+## Setup Guide
+
+This guide is designed so that you can hand it to Claude Code (`claude` CLI) and it will walk you through each step interactively. Or follow it manually.
+
+### Prerequisites
+
+- Python 3.11+
+- A Google account (Gmail, Calendar, Drive)
+- An Anthropic API key ([console.anthropic.com](https://console.anthropic.com))
+- A Telegram account
+
+### Step 1: Clone and install dependencies
+
+```bash
+git clone https://github.com/YOUR_USERNAME/proactive-assistant.git
+cd proactive-assistant
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Step 2: Create a Telegram bot
+
+1. Open Telegram and message [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` and follow the prompts to name your bot
+3. Copy the **bot token** BotFather gives you
+4. To get your **chat ID**: message your new bot, then visit `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser. Look for `"chat":{"id":XXXXXXXX}` — that number is your chat ID
+
+### Step 3: Set up Google Cloud credentials
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com)
+2. Create a new project (or use an existing one)
+3. Enable these APIs:
+   - Gmail API
+   - Google Calendar API
+   - Google Drive API
+4. Go to **APIs & Services → Credentials**
+5. Click **Create Credentials → OAuth client ID**
+   - Application type: **Desktop app**
+   - Download the JSON file and save it as `credentials.json` in the project directory
+
+### Step 4: Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and fill in your values:
+
+| Variable | Required | Description |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | Yes | From BotFather (Step 2) |
+| `TELEGRAM_CHAT_ID` | Yes | Your Telegram chat ID (Step 2) |
+| `ANTHROPIC_API_KEY` | Yes | From [console.anthropic.com](https://console.anthropic.com) |
+| `DROPBOX_ACCESS_TOKEN` | No | For Dropbox search. Get from [Dropbox App Console](https://www.dropbox.com/developers/apps) |
+| `PRIORITIES_URL` | No | URL to a published priorities/to-do list (plain text or HTML) |
+| `CLAUDE_MODEL` | No | Defaults to `claude-sonnet-4-20250514` |
+| `DIGEST_HOUR` | No | Hour to send digest (default: 5, meaning 5 AM) |
+| `DIGEST_MINUTE` | No | Minute to send digest (default: 30) |
+
+### Step 5: Authorize Google APIs
+
+Run this once locally (requires a browser for the OAuth consent flow):
+
+```bash
+source venv/bin/activate
+python3 -c "from google_auth import get_credentials; get_credentials()"
+```
+
+A browser window will open asking you to authorize Gmail, Calendar, and Drive access. After approving, a `token.json` file is created automatically.
+
+### Step 6: Test locally
+
+```bash
+# Run a one-time digest
+python3 scheduler.py --force
+
+# Start the interactive bot
+python3 bot.py
+```
+
+If the digest works, you should receive a Telegram message with your morning briefing.
+
+### Step 7: Deploy to a cloud VM
+
+The bot needs to run 24/7 for interactive replies, and the digest needs a cron-like scheduler. A free-tier GCP e2-micro VM works well.
+
+#### 7a. Create the VM
+
+```bash
+gcloud compute instances create claudette \
+  --zone=us-central1-a \
+  --machine-type=e2-micro \
+  --image-family=debian-12 \
+  --image-project=debian-cloud
+```
+
+#### 7b. Set up the VM
+
+```bash
+# SSH in
+gcloud compute ssh claudette --zone=us-central1-a
+
+# On the VM:
+sudo apt update && sudo apt install -y python3-venv python3-pip
+mkdir -p ~/proactive-assistant
+```
+
+#### 7c. Copy files to the VM
+
+From your local machine:
+
+```bash
+# Copy all project files (excluding secrets initially)
+gcloud compute scp --zone=us-central1-a \
+  *.py requirements.txt run_bot.sh run_digest.sh .env.example \
+  claudette:~/proactive-assistant/
+
+# Copy your secrets separately
+gcloud compute scp --zone=us-central1-a \
+  .env credentials.json token.json \
+  claudette:~/proactive-assistant/
+```
+
+#### 7d. Install dependencies on VM
+
+```bash
+gcloud compute ssh claudette --zone=us-central1-a --command='
+  cd ~/proactive-assistant &&
+  python3 -m venv venv &&
+  source venv/bin/activate &&
+  pip install -r requirements.txt
+'
+```
+
+#### 7e. Create systemd services
+
+SSH into the VM and create these files:
+
+**Bot service** (`/etc/systemd/system/claudette-bot.service`):
+```ini
+[Unit]
+Description=Claudette Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/proactive-assistant
+ExecStart=/home/YOUR_USERNAME/proactive-assistant/venv/bin/python3 bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Digest timer** (`/etc/systemd/system/claudette-digest.timer`):
+```ini
+[Unit]
+Description=Run Claudette digest check every 3 hours
+
+[Timer]
+OnCalendar=*-*-* 00/3:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+**Digest service** (`/etc/systemd/system/claudette-digest.service`):
+```ini
+[Unit]
+Description=Claudette Daily Digest
+After=network.target
+
+[Service]
+Type=oneshot
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/proactive-assistant
+ExecStart=/home/YOUR_USERNAME/proactive-assistant/venv/bin/python3 scheduler.py
+```
+
+Then enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now claudette-bot.service
+sudo systemctl enable --now claudette-digest.timer
+```
+
+#### 7f. Verify
+
+```bash
+# Check bot is running
+sudo systemctl status claudette-bot.service
+
+# Check timer is scheduled
+systemctl list-timers claudette-digest.timer
+
+# Check logs
+sudo journalctl -u claudette-bot.service --since "10 minutes ago" --no-pager
+```
+
+### How the digest schedule works
+
+The timer fires every 3 hours. Each time, `scheduler.py` checks your **Google Calendar timezone** and compares it to your configured digest time (default 5:30 AM). If the current local time in your timezone is within 90 minutes of the target, the digest runs. Otherwise it exits immediately.
+
+This means: if you travel and update your Google Calendar timezone, the digest automatically adjusts to arrive at 5:30 AM in your new timezone. No reconfiguration needed.
+
+### Updating code
+
+```bash
+# Copy changed files to VM
+gcloud compute scp --zone=us-central1-a <files> claudette:~/proactive-assistant/
+
+# Restart the bot (picks up code changes)
+gcloud compute ssh claudette --zone=us-central1-a --command='sudo systemctl restart claudette-bot.service'
+```
+
+## Bot commands
+
+| Command | Description |
+|---|---|
+| `/start` or `/help` | Show available commands |
+| `/status` | Check which services are connected |
+| `/digest` | Trigger a digest immediately |
+| `/search <query>` | Search Google Drive and Dropbox |
+| *(free text)* | Chat naturally — ask questions, give feedback, request file searches |
+| *(file attachment)* | Send a text file and Claudette will read and discuss it |
+
+## How it learns
+
+When you reply to Claudette with feedback like "don't flag emails from Vercel" or "I never read that newsletter", the bot extracts preference rules and saves them to `preferences.json`. These rules are included in future digest prompts so Claude can apply them.
+
+You can also directly manage preferences by editing `preferences.json`:
+
+```json
+{
+  "rules": ["Never flag Vercel deployment emails", "Culture Lab is passive — no prep needed"],
+  "senders_always_flag": ["important-person@example.com"],
+  "senders_never_flag": ["noreply@vercel.com"],
+  "feedback_log": []
+}
+```
+
+## License
+
+MIT

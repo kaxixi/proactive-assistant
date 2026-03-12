@@ -1,0 +1,276 @@
+"""Gmail scanning — flags emails at risk of being dropped."""
+
+import email.utils
+import logging
+import re
+from datetime import datetime, timezone, timedelta
+from dataclasses import dataclass, field
+
+from googleapiclient.discovery import build
+
+from google_auth import get_credentials
+from preferences import load_preferences
+
+logger = logging.getLogger(__name__)
+
+# Thresholds (days)
+REPLY_URGENCY_HIGH = 3
+REPLY_URGENCY_MEDIUM = 7
+FOLLOWUP_THRESHOLD = 5
+
+# Automated/noise senders to always skip (pattern matching)
+AUTOMATED_SENDER_PATTERNS = [
+    r"noreply@",
+    r"no-reply@",
+    r"notifications?@",
+    r"mailer-daemon@",
+    r".*@.*\.vercel\.com",
+    r".*@vercel\.com",
+    r".*@github\.com",
+    r".*@googlegroups\.com",
+]
+
+# Subject patterns that indicate automated/newsletter emails
+NEWSLETTER_PATTERNS = [
+    r"^(re:\s*)?unsubscribe",
+    r"weekly digest",
+    r"daily digest",
+    r"newsletter",
+    r"your .* summary",
+    r"notification from",
+]
+
+
+@dataclass
+class FlaggedEmail:
+    subject: str
+    sender: str
+    sender_name: str
+    date: datetime
+    age_days: int
+    thread_id: str
+    message_id: str
+    reason: str  # "unreplied" or "needs_followup"
+    urgency: str  # "high", "medium", "low"
+    snippet: str = ""
+    labels: list = field(default_factory=list)
+    is_newsletter: bool = False
+
+
+def _get_gmail_service():
+    creds = get_credentials()
+    return build("gmail", "v1", credentials=creds)
+
+
+def _parse_date(headers: list) -> datetime:
+    for h in headers:
+        if h["name"].lower() == "date":
+            parsed = email.utils.parsedate_to_datetime(h["value"])
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+    return datetime.now(timezone.utc)
+
+
+def _get_header(headers: list, name: str) -> str:
+    for h in headers:
+        if h["name"].lower() == name.lower():
+            return h["value"]
+    return ""
+
+
+def _extract_email_address(from_header: str) -> str:
+    _, addr = email.utils.parseaddr(from_header)
+    return addr.lower()
+
+
+def _extract_name(from_header: str) -> str:
+    name, _ = email.utils.parseaddr(from_header)
+    return name or from_header
+
+
+def _is_automated_sender(email_addr: str, never_flag: list) -> bool:
+    """Check if sender is automated/noise."""
+    if email_addr in never_flag:
+        return True
+    for pattern in AUTOMATED_SENDER_PATTERNS:
+        if re.match(pattern, email_addr, re.IGNORECASE):
+            return True
+    return False
+
+
+def _is_newsletter(subject: str, headers: list) -> bool:
+    """Check if email looks like a newsletter/subscription."""
+    subj_lower = subject.lower()
+    for pattern in NEWSLETTER_PATTERNS:
+        if re.search(pattern, subj_lower):
+            return True
+    # Check for List-Unsubscribe header (strong newsletter signal)
+    if _get_header(headers, "List-Unsubscribe"):
+        return True
+    return False
+
+
+def scan_inbox(my_email: str = None, days_back: int = 14) -> list[FlaggedEmail]:
+    """Scan inbox for emails that need attention.
+
+    Returns a list of FlaggedEmail objects sorted by urgency.
+    """
+    service = _get_gmail_service()
+    now = datetime.now(timezone.utc)
+    prefs = load_preferences()
+    never_flag = prefs.get("senders_never_flag", [])
+    always_flag = prefs.get("senders_always_flag", [])
+
+    if not my_email:
+        profile = service.users().getProfile(userId="me").execute()
+        my_email = profile["emailAddress"].lower()
+
+    after_date = (now - timedelta(days=days_back)).strftime("%Y/%m/%d")
+    query = f"in:inbox after:{after_date}"
+
+    threads = []
+    page_token = None
+    while True:
+        resp = service.users().threads().list(
+            userId="me", q=query, pageToken=page_token, maxResults=100
+        ).execute()
+        threads.extend(resp.get("threads", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    logger.info(f"Found {len(threads)} inbox threads from last {days_back} days")
+
+    flagged = []
+    newsletters = []
+
+    # Batch fetch thread details (much faster than one-by-one)
+    thread_details = []
+    batch_size = 20
+
+    for i in range(0, len(threads), batch_size):
+        batch = service.new_batch_http_request()
+        batch_results = {}
+
+        def _make_callback(tid):
+            def callback(request_id, response, exception):
+                if exception is None:
+                    batch_results[tid] = response
+                else:
+                    logger.warning(f"Batch fetch failed for thread {tid}: {exception}")
+            return callback
+
+        for thread_meta in threads[i:i + batch_size]:
+            tid = thread_meta["id"]
+            batch.add(
+                service.users().threads().get(
+                    userId="me", id=tid, format="metadata",
+                    metadataHeaders=["From", "To", "Subject", "Date", "List-Unsubscribe"],
+                ),
+                callback=_make_callback(tid),
+            )
+
+        batch.execute()
+        thread_details.extend(batch_results.values())
+
+    logger.info(f"Fetched {len(thread_details)} thread details via batch API")
+
+    for thread in thread_details:
+        messages = thread.get("messages", [])
+        if not messages:
+            continue
+
+        first_msg = messages[0]
+        last_msg = messages[-1]
+
+        first_headers = first_msg.get("payload", {}).get("headers", [])
+        last_headers = last_msg.get("payload", {}).get("headers", [])
+
+        subject = _get_header(first_headers, "Subject") or "(no subject)"
+        last_from = _get_header(last_headers, "From")
+        last_sender_email = _extract_email_address(last_from)
+        last_date = _parse_date(last_headers)
+        age = (now - last_date).days
+
+        first_from = _get_header(first_headers, "From")
+        original_sender_email = _extract_email_address(first_from)
+        original_sender_name = _extract_name(first_from)
+
+        labels = last_msg.get("labelIds", [])
+
+        # Skip automated senders (unless in always-flag list)
+        if original_sender_email not in always_flag:
+            if _is_automated_sender(last_sender_email, never_flag):
+                continue
+
+        # Detect newsletters
+        is_newsletter = _is_newsletter(subject, last_headers)
+        if is_newsletter and original_sender_email not in always_flag:
+            newsletters.append(FlaggedEmail(
+                subject=subject,
+                sender=original_sender_email,
+                sender_name=original_sender_name,
+                date=last_date,
+                age_days=age,
+                thread_id=thread_meta["id"],
+                message_id=last_msg["id"],
+                reason="newsletter",
+                urgency="low",
+                snippet=last_msg.get("snippet", "")[:200],
+                labels=labels,
+                is_newsletter=True,
+            ))
+            continue
+
+        # --- Heuristic 1: Unreplied emails where someone else spoke last ---
+        if last_sender_email != my_email:
+            if age >= REPLY_URGENCY_HIGH:
+                urgency = "high"
+            elif age >= REPLY_URGENCY_MEDIUM:
+                urgency = "medium"
+            else:
+                urgency = "low"
+
+            # Skip low urgency unless important
+            if urgency == "low" and "IMPORTANT" not in labels:
+                if original_sender_email not in always_flag:
+                    continue
+
+            flagged.append(FlaggedEmail(
+                subject=subject,
+                sender=original_sender_email,
+                sender_name=original_sender_name,
+                date=last_date,
+                age_days=age,
+                thread_id=thread_meta["id"],
+                message_id=last_msg["id"],
+                reason="unreplied",
+                urgency=urgency,
+                snippet=last_msg.get("snippet", "")[:200],
+                labels=labels,
+            ))
+
+        # --- Heuristic 2: I replied last — might need to follow up ---
+        elif last_sender_email == my_email and len(messages) > 1:
+            if age >= FOLLOWUP_THRESHOLD:
+                flagged.append(FlaggedEmail(
+                    subject=subject,
+                    sender=original_sender_email,
+                    sender_name=original_sender_name,
+                    date=last_date,
+                    age_days=age,
+                    thread_id=thread_meta["id"],
+                    message_id=last_msg["id"],
+                    reason="needs_followup",
+                    urgency="medium" if age >= REPLY_URGENCY_MEDIUM else "low",
+                    snippet=last_msg.get("snippet", "")[:200],
+                    labels=labels,
+                ))
+
+    # Sort: high urgency first, then by age descending
+    urgency_order = {"high": 0, "medium": 1, "low": 2}
+    flagged.sort(key=lambda e: (urgency_order[e.urgency], -e.age_days))
+
+    logger.info(f"Flagged {len(flagged)} actionable emails, {len(newsletters)} newsletters")
+    return flagged

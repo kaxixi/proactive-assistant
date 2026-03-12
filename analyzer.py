@@ -1,0 +1,84 @@
+"""Claude API — generates natural language digests and analyzes importance."""
+
+import logging
+import anthropic
+
+from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from email_monitor import FlaggedEmail
+from calendar_digest import Meeting
+
+logger = logging.getLogger(__name__)
+
+
+def _get_client():
+    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+def generate_daily_digest(
+    flagged_emails: list[FlaggedEmail],
+    meetings: list[Meeting],
+    preferences: dict = None,
+    priorities: str = "",
+) -> str:
+    """Generate a natural language daily digest using Claude."""
+
+    # Build context
+    email_summary = []
+    for e in flagged_emails:
+        email_summary.append(
+            f"- Subject: {e.subject}, From: {e.sender_name} <{e.sender}>, "
+            f"Age: {e.age_days} days, Reason: {e.reason}, Urgency: {e.urgency}, "
+            f"Snippet: {e.snippet}"
+        )
+
+    meeting_summary = []
+    for m in meetings:
+        day = "Tomorrow" if m.is_tomorrow else "Today"
+        recurrence = "ONE-TIME" if not m.is_recurring else "recurring"
+        meeting_summary.append(
+            f"- {day} {m.start.strftime('%I:%M %p')}: {m.summary}, "
+            f"Attendees: {len(m.attendees)}, Needs prep: {m.needs_prep}, "
+            f"Type: {recurrence}"
+        )
+
+    pref_context = ""
+    if preferences and preferences.get("rules"):
+        pref_context = (
+            "\nUser preferences (learned from past feedback):\n"
+            + "\n".join(f"- {r}" for r in preferences["rules"])
+        )
+
+    priorities_context = ""
+    if priorities:
+        priorities_context = f"\nEREZ'S CURRENT PRIORITIES:\n{priorities}\n"
+
+    prompt = f"""You are Claudette, a proactive personal assistant for Erez, a behavioral science researcher.
+Generate a concise, friendly morning digest based on this data.
+
+EMAILS NEEDING ATTENTION:
+{chr(10).join(email_summary) if email_summary else "None — inbox looks clean."}
+
+CALENDAR (list ALL meetings — do not skip any):
+{chr(10).join(meeting_summary) if meeting_summary else "No meetings today or tomorrow."}
+{priorities_context}{pref_context}
+
+Guidelines:
+- List ALL calendar events — every single one. Non-recurring (ONE-TIME) meetings should be highlighted with extra emphasis since Erez is more likely to miss them
+- Lead with calendar, then most urgent email items
+- For emails, suggest specific actions (reply, follow up, archive)
+- For meetings that need prep, offer to help (e.g., "Want me to look anything up?")
+- Keep it focused — aim for 5-10 actionable email items max, grouped by priority
+- Be warm but concise — this is a Telegram message, not an essay
+- Use emoji sparingly for visual structure
+- If there's nothing urgent, say so briefly and positively
+- Erez can reply to this message with feedback or questions
+- If Erez's priorities list is available, cross-reference emails and meetings against it — highlight anything that connects to a current priority
+"""
+
+    response = _get_client().messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    return response.content[0].text
