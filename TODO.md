@@ -1,8 +1,6 @@
 # Claudette TODO
 
 ## High Priority
-- [ ] Create GitHub repo with sanitized code (no API keys, no personal data)
-- [ ] Write detailed setup guide for new users (Claude Code can walk them through it)
 - [ ] Newsletter audit — analyze which email subscriptions are actually opened/read, help unsubscribe from the rest
 - [ ] Handle Dropbox token refresh (short-lived tokens expire; switch to OAuth refresh flow)
 
@@ -23,6 +21,9 @@
 - [ ] Cost monitoring — track Claude API usage per day/month
 
 ## Done
+- [x] GitHub repo with sanitized code: https://github.com/kaxixi/proactive-assistant
+- [x] Detailed setup guide / README for new users
+- [x] Timezone-aware digest scheduling (reads Google Calendar timezone, auto-adjusts)
 - [x] Telegram bot setup and interactive replies
 - [x] Gmail scanning with importance heuristics
 - [x] Calendar digest with non-recurring meeting flags

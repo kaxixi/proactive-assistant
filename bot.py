@@ -50,6 +50,17 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "search_gmail",
+        "description": "Search Gmail for emails matching a query. Use when Erez asks to find, look up, or check on an email. Supports Gmail search syntax (e.g. 'from:someone subject:topic', 'is:unread', 'newer_than:7d').",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Gmail search query"}
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -59,6 +70,40 @@ def _is_authorized(update: Update) -> bool:
 
 def _get_claude():
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+def _search_gmail(query: str, max_results: int = 5) -> str:
+    """Search Gmail and return formatted results."""
+    import email.utils
+    from googleapiclient.discovery import build
+    from google_auth import get_credentials
+
+    creds = get_credentials()
+    service = build("gmail", "v1", credentials=creds)
+
+    resp = service.users().messages().list(
+        userId="me", q=query, maxResults=max_results
+    ).execute()
+    messages = resp.get("messages", [])
+
+    if not messages:
+        return f"No emails found matching '{query}'."
+
+    lines = []
+    for msg_meta in messages:
+        msg = service.users().messages().get(
+            userId="me", id=msg_meta["id"], format="metadata",
+            metadataHeaders=["From", "Subject", "Date"],
+        ).execute()
+        headers = msg.get("payload", {}).get("headers", [])
+        header_map = {h["name"].lower(): h["value"] for h in headers}
+        subject = header_map.get("subject", "(no subject)")
+        sender = header_map.get("from", "unknown")
+        date = header_map.get("date", "")
+        snippet = msg.get("snippet", "")
+        lines.append(f"From: {sender}\nSubject: {subject}\nDate: {date}\n{snippet}\n")
+
+    return "\n---\n".join(lines)
 
 
 def _execute_tool(tool_name: str, tool_input: dict) -> str:
@@ -72,6 +117,8 @@ def _execute_tool(tool_name: str, tool_input: dict) -> str:
             from dropbox_search import search_files, format_dropbox_results
             files = search_files(tool_input["query"])
             return format_dropbox_results(files)
+        elif tool_name == "search_gmail":
+            return _search_gmail(tool_input["query"])
         else:
             return f"Unknown tool: {tool_name}"
     except Exception as e:
