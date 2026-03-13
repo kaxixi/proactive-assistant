@@ -5,7 +5,7 @@ A daily automation system that monitors your Gmail inbox and Google Calendar, ge
 ## What it does
 
 - **Morning digest** — Scans your inbox for emails you might be dropping (unreplied, aging, needs follow-up), lists today's and tomorrow's meetings, cross-references against your current priorities, and sends you a prioritized summary each morning via Telegram
-- **Interactive bot** — Reply to any message with questions or feedback. Search Google Drive and Dropbox by chatting naturally
+- **Interactive bot** — Reply to any message with questions or feedback. Search Gmail, Google Drive, and Dropbox by chatting naturally
 - **Learning system** — Give feedback ("don't flag newsletters from X") and it remembers for next time
 - **Timezone-aware** — Reads your Google Calendar timezone setting. Travel to a new timezone, update your calendar, and the digest follows you
 
@@ -253,6 +253,7 @@ gcloud compute ssh claudette --zone=us-central1-a --command='sudo systemctl rest
 | `/status` | Check which services are connected |
 | `/digest` | Trigger a digest immediately |
 | `/search <query>` | Search Google Drive and Dropbox |
+| *(ask about an email)* | Searches Gmail automatically via Claude tool use |
 | *(free text)* | Chat naturally — ask questions, give feedback, request file searches |
 | *(file attachment)* | Send a text file and Claudette will read and discuss it |
 
