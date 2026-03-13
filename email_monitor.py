@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from googleapiclient.discovery import build
 
 from google_auth import get_credentials
-from preferences import load_preferences
+from preferences import load_preferences, get_dismissed_thread_ids
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +121,7 @@ def scan_inbox(my_email: str = None, days_back: int = 14) -> list[FlaggedEmail]:
     prefs = load_preferences()
     never_flag = prefs.get("senders_never_flag", [])
     always_flag = prefs.get("senders_always_flag", [])
+    dismissed_ids = get_dismissed_thread_ids()
 
     if not my_email:
         profile = service.users().getProfile(userId="me").execute()
@@ -179,6 +180,11 @@ def scan_inbox(my_email: str = None, days_back: int = 14) -> list[FlaggedEmail]:
     for thread in thread_details:
         messages = thread.get("messages", [])
         if not messages:
+            continue
+
+        # Skip dismissed threads
+        tid = thread.get("id", "")
+        if tid in dismissed_ids:
             continue
 
         first_msg = messages[0]

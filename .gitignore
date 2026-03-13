@@ -2,6 +2,7 @@
 credentials.json
 token.json
 preferences.json
+memory.json
 __pycache__/
 *.pyc
 venv/

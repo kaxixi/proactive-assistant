@@ -14,6 +14,7 @@ DEFAULT_PREFS = {
     "rules": [],
     "senders_always_flag": [],
     "senders_never_flag": [],
+    "dismissed_threads": [],
     "feedback_log": [],
 }
 
@@ -51,6 +52,43 @@ def add_sender_never_flag(email: str):
     if email not in prefs["senders_never_flag"]:
         prefs["senders_never_flag"].append(email)
         save_preferences(prefs)
+
+
+def dismiss_thread(thread_id: str, subject: str = "", reason: str = ""):
+    """Dismiss a thread so it won't appear in future digests."""
+    prefs = load_preferences()
+    dismissed = prefs.get("dismissed_threads", [])
+    # Don't add duplicates
+    if any(d["thread_id"] == thread_id for d in dismissed):
+        return
+    dismissed.append({
+        "thread_id": thread_id,
+        "subject": subject,
+        "reason": reason,
+        "dismissed_at": datetime.now(timezone.utc).isoformat(),
+    })
+    prefs["dismissed_threads"] = dismissed
+    save_preferences(prefs)
+    logger.info(f"Dismissed thread {thread_id}: {subject} ({reason})")
+
+
+def get_dismissed_thread_ids() -> set:
+    """Return set of dismissed thread IDs, auto-expiring after 30 days."""
+    prefs = load_preferences()
+    dismissed = prefs.get("dismissed_threads", [])
+    now = datetime.now(timezone.utc)
+    active = []
+    ids = set()
+    for d in dismissed:
+        dismissed_at = datetime.fromisoformat(d["dismissed_at"])
+        if (now - dismissed_at).days < 30:
+            active.append(d)
+            ids.add(d["thread_id"])
+    # Clean up expired entries
+    if len(active) != len(dismissed):
+        prefs["dismissed_threads"] = active
+        save_preferences(prefs)
+    return ids
 
 
 def log_feedback(feedback_type: str, detail: str):

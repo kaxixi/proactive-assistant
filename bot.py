@@ -61,6 +61,18 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "dismiss_email",
+        "description": "Dismiss an email thread so it won't appear in future digests. Use when Erez says he's handled an email, it's not relevant, the issue is resolved, or he doesn't need reminders about it. Search by sender name, subject keywords, or topic.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query to find the thread to dismiss (sender name, subject keywords, etc.)"},
+                "reason": {"type": "string", "description": "Why it's being dismissed (e.g. 'handled', 'not relevant', 'resolved')"},
+            },
+            "required": ["query", "reason"],
+        },
+    },
 ]
 
 
@@ -106,6 +118,35 @@ def _search_gmail(query: str, max_results: int = 5) -> str:
     return "\n---\n".join(lines)
 
 
+def _dismiss_email(query: str, reason: str) -> str:
+    """Find a Gmail thread by query and dismiss it from future digests."""
+    from googleapiclient.discovery import build
+    from google_auth import get_credentials
+    from preferences import dismiss_thread
+
+    creds = get_credentials()
+    service = build("gmail", "v1", credentials=creds)
+
+    resp = service.users().messages().list(
+        userId="me", q=query, maxResults=1
+    ).execute()
+    messages = resp.get("messages", [])
+
+    if not messages:
+        return f"No emails found matching '{query}'. Could not dismiss."
+
+    msg = service.users().messages().get(
+        userId="me", id=messages[0]["id"], format="metadata",
+        metadataHeaders=["Subject"],
+    ).execute()
+    thread_id = msg["threadId"]
+    headers = msg.get("payload", {}).get("headers", [])
+    subject = next((h["value"] for h in headers if h["name"].lower() == "subject"), "")
+
+    dismiss_thread(thread_id, subject=subject, reason=reason)
+    return f"Dismissed thread: \"{subject}\" (reason: {reason}). It won't appear in future digests."
+
+
 def _execute_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a tool call and return the result as a string."""
     try:
@@ -119,6 +160,8 @@ def _execute_tool(tool_name: str, tool_input: dict) -> str:
             return format_dropbox_results(files)
         elif tool_name == "search_gmail":
             return _search_gmail(tool_input["query"])
+        elif tool_name == "dismiss_email":
+            return _dismiss_email(tool_input["query"], tool_input["reason"])
         else:
             return f"Unknown tool: {tool_name}"
     except Exception as e:
@@ -211,20 +254,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _last_digest:
         digest_context = f"\nThe most recent digest I sent:\n{_last_digest}\n"
 
+    from memory import get_memories_for_prompt
+    memory_context = get_memories_for_prompt()
+    memory_section = f"\nRecent memory (things you remember from past interactions):\n{memory_context}\n" if memory_context else ""
+
     system_prompt = f"""You are Claudette, a proactive personal assistant for a behavioral science researcher named Erez.
 You communicate via Telegram.
 
 Current learned preferences:
 {rules_text}
-{digest_context}
-You have access to tools to search Google Drive and Dropbox for files. Use them when Erez asks you to find or look up documents.
+{digest_context}{memory_section}
+You have tools to search Gmail, Google Drive, and Dropbox, and to dismiss email threads from future digests.
 
 Instructions:
 - Respond warmly and concisely (this is Telegram, not email)
-- If Erez is giving feedback on what to flag or not flag, acknowledge it and tell him you've noted it
+- If Erez says he's handled an email, it's resolved, or it's not relevant — use the dismiss_email tool to suppress it from future digests. This is important! Without dismissing, it will keep showing up.
 - If he's asking a question, answer it directly
 - If he's asking you to find a file or look something up, use the search tools
-- Extract any preference rules from his feedback. Return them in a structured way at the end of your response, on lines starting with "RULE:" — these will be saved automatically. Only extract rules that represent lasting preferences, not one-time observations.
+- Use your memory context to maintain continuity — reference past conversations naturally, avoid re-asking about things you already know
+- Extract any LASTING preference rules from his feedback. Return them on lines starting with "RULE:" — these will be saved automatically. Only extract rules that represent lasting preferences (e.g., "Desiree's emails are always important"), not one-time dismissals (use the dismiss tool for those instead).
 """
 
     try:
@@ -287,6 +335,14 @@ Instructions:
         if display_text:
             await update.message.reply_text(display_text)
 
+        # Extract memories from this conversation (non-blocking, non-fatal)
+        try:
+            from memory import extract_and_store
+            conversation_log = f"User: {user_text}\nAssistant: {reply}"
+            extract_and_store(conversation_log, source="bot")
+        except Exception as mem_err:
+            logger.warning(f"Memory extraction failed (non-fatal): {mem_err}")
+
     except Exception as e:
         logger.error(f"Error handling message: {e}", exc_info=True)
         await update.message.reply_text(
@@ -346,12 +402,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if _last_digest:
             digest_context = f"\nThe most recent digest I sent:\n{_last_digest}\n"
 
+        from memory import get_memories_for_prompt
+        memory_context = get_memories_for_prompt()
+        memory_section = f"\nRecent memory (things you remember from past interactions):\n{memory_context}\n" if memory_context else ""
+
         system_prompt = f"""You are Claudette, a proactive personal assistant for a behavioral science researcher named Erez.
 You communicate via Telegram.
 
 Current learned preferences:
 {rules_text}
-{digest_context}
+{digest_context}{memory_section}
 Instructions:
 - Respond warmly and concisely (this is Telegram, not email)
 - If the file contains suggestions or preferences, acknowledge them and extract rules
@@ -382,6 +442,13 @@ Instructions:
         display_text = "\n".join(display_lines).strip()
         if display_text:
             await update.message.reply_text(display_text)
+
+        # Extract memories from this conversation (non-fatal)
+        try:
+            from memory import extract_and_store
+            extract_and_store(f"User sent file '{doc.file_name}': {caption}\nAssistant: {reply}", source="bot")
+        except Exception as mem_err:
+            logger.warning(f"Memory extraction failed (non-fatal): {mem_err}")
 
     except Exception as e:
         logger.error(f"Error reading document: {e}", exc_info=True)

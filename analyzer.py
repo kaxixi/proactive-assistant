@@ -19,6 +19,7 @@ def generate_daily_digest(
     meetings: list[Meeting],
     preferences: dict = None,
     priorities: str = "",
+    memories_context: str = "",
 ) -> str:
     """Generate a natural language daily digest using Claude."""
 
@@ -61,7 +62,7 @@ EMAILS NEEDING ATTENTION:
 CALENDAR (list ALL meetings — do not skip any):
 {chr(10).join(meeting_summary) if meeting_summary else "No meetings today or tomorrow."}
 {priorities_context}{pref_context}
-
+{f"RECENT CONTEXT (from past interactions and digests — use this to avoid redundancy):{chr(10)}{memories_context}{chr(10)}" if memories_context else ""}
 Guidelines:
 - List ALL calendar events — every single one. Non-recurring (ONE-TIME) meetings should be highlighted with extra emphasis since Erez is more likely to miss them
 - Lead with calendar, then most urgent email items
@@ -73,6 +74,7 @@ Guidelines:
 - If there's nothing urgent, say so briefly and positively
 - Erez can reply to this message with feedback or questions
 - If Erez's priorities list is available, cross-reference emails and meetings against it — highlight anything that connects to a current priority
+- Use RECENT CONTEXT to avoid re-flagging resolved items and to reference ongoing situations naturally
 """
 
     response = _get_client().messages.create(

@@ -11,6 +11,7 @@ from calendar_digest import get_upcoming_meetings, get_user_timezone
 from analyzer import generate_daily_digest
 from preferences import load_preferences
 from priorities import fetch_priorities
+from memory import get_memories_for_prompt, extract_and_store, compact_memories
 from bot import send_message
 from config import DIGEST_HOUR, DIGEST_MINUTE
 
@@ -59,18 +60,33 @@ async def run_daily_digest():
         meetings = get_upcoming_meetings()
         logger.info(f"Found {len(meetings)} upcoming meetings")
 
-        # 3. Load preferences and priorities
+        # 3. Load preferences, priorities, and memories
         prefs = load_preferences()
         logger.info("Fetching priorities...")
         priorities = fetch_priorities()
+        memories_context = get_memories_for_prompt()
 
         # 4. Generate digest with Claude
         logger.info("Generating digest with Claude...")
-        digest = generate_daily_digest(flagged_emails, meetings, prefs, priorities)
+        digest = generate_daily_digest(
+            flagged_emails, meetings, prefs, priorities, memories_context
+        )
 
         # 5. Send via Telegram
         await send_message(digest)
         logger.info("Daily digest sent successfully")
+
+        # 6. Extract memories from the digest we just sent
+        try:
+            extract_and_store(f"Daily digest sent to Erez:\n{digest}", source="digest")
+        except Exception as e:
+            logger.warning(f"Memory extraction from digest failed (non-fatal): {e}")
+
+        # 7. Run memory compaction if needed
+        try:
+            compact_memories()
+        except Exception as e:
+            logger.warning(f"Memory compaction failed (non-fatal): {e}")
 
     except FileNotFoundError as e:
         error_msg = f"⚠️ Setup incomplete: {e}"
