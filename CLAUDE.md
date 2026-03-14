@@ -12,7 +12,8 @@ A daily automation system that acts as a proactive personal assistant, delivered
 - **priorities.py** — Fetches a published priorities list (URL configurable via PRIORITIES_URL env var).
 - **drive_search.py** — Google Drive file search.
 - **dropbox_search.py** — Dropbox file search.
-- **preferences.py** — Learning system. Stores rules, sender preferences, and feedback log in preferences.json.
+- **memory.py** — Episodic memory system. After each interaction, Claude extracts key facts into memory.json. Loaded into both bot and digest prompts for continuity across conversations.
+- **preferences.py** — Learning system. Stores rules, sender preferences, dismissed threads, and feedback log in preferences.json.
 - **google_auth.py** — Shared Google OAuth2 (Gmail, Calendar, Drive).
 - **config.py** — Loads all config from .env with `override=True`. Includes DIGEST_HOUR/DIGEST_MINUTE.
 
@@ -29,6 +30,7 @@ A daily automation system that acts as a proactive personal assistant, delivered
 - **Claude Sonnet for analysis** — balances cost and quality for daily use. Model configurable via CLAUDE_MODEL env var.
 - **Batch Gmail API** — threads fetched in batches of 20 (not one-by-one) for ~5x speedup
 - **Preferences as JSON** — simple, human-readable, no database needed. Upgrade to SQLite if it grows.
+- **Two-layer memory** — preferences.json stores lasting rules and dismissed threads; memory.json stores episodic memories (pending tasks, resolved items, relationships, facts) with typed auto-expiry and compaction. Both are loaded into prompts.
 - **OAuth token on VM** — token.json must be generated locally (browser required) then copied to VM
 - **Timezone-aware scheduling** — timer fires every 3h, Python checks Google Calendar timezone to decide whether to send. No hardcoded timezone in the timer.
 
@@ -57,3 +59,4 @@ A daily automation system that acts as a proactive personal assistant, delivered
 - credentials.json (Google OAuth client secrets)
 - token.json (Google OAuth tokens)
 - preferences.json (personal preference data)
+- memory.json (personal episodic memory)

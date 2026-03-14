@@ -6,7 +6,8 @@ A daily automation system that monitors your Gmail inbox and Google Calendar, ge
 
 - **Morning digest** — Scans your inbox for emails you might be dropping (unreplied, aging, needs follow-up), lists today's and tomorrow's meetings, cross-references against your current priorities, and sends you a prioritized summary each morning via Telegram
 - **Interactive bot** — Reply to any message with questions or feedback. Search Gmail, Google Drive, and Dropbox by chatting naturally
-- **Learning system** — Give feedback ("don't flag newsletters from X") and it remembers for next time
+- **Persistent memory** — Remembers key facts across conversations: pending tasks, resolved items, who people are, and what you've told it. Say "Capital One is handled" and it won't come up again
+- **Learning system** — Give feedback ("don't flag newsletters from X") and it learns lasting preferences
 - **Timezone-aware** — Reads your Google Calendar timezone setting. Travel to a new timezone, update your calendar, and the digest follows you
 
 ## Architecture
@@ -18,7 +19,8 @@ email_monitor.py      — Gmail scanning with importance heuristics and batch AP
 calendar_digest.py    — Google Calendar: meetings, prep flags, timezone detection
 analyzer.py           — Claude API: generates the natural language digest
 priorities.py         — Fetches a published priorities list (e.g., Simplenote URL)
-preferences.py        — Learning system: rules, sender prefs, feedback log
+memory.py             — Episodic memory: extracts and stores key facts from every interaction
+preferences.py        — Learning system: rules, sender prefs, dismissed threads, feedback log
 drive_search.py       — Google Drive file search
 dropbox_search.py     — Dropbox file search
 google_auth.py        — Shared Google OAuth2 (Gmail, Calendar, Drive)
@@ -259,15 +261,36 @@ gcloud compute ssh claudette --zone=us-central1-a --command='sudo systemctl rest
 
 ## How it learns
 
-When you reply to Claudette with feedback like "don't flag emails from Vercel" or "I never read that newsletter", the bot extracts preference rules and saves them to `preferences.json`. These rules are included in future digest prompts so Claude can apply them.
+Claudette has two layers of memory:
 
-You can also directly manage preferences by editing `preferences.json`:
+### Episodic memory (`memory.json`)
+
+After every conversation and every digest, a second Claude call extracts key facts and stores them with typed auto-expiry:
+
+| Type | Expires | Example |
+|---|---|---|
+| `pending` | 30 days | "Chase Visa funding review still needs to be completed" |
+| `resolved` | 14 days | "Capital One payment issue handled" |
+| `fact` | 60 days | "Gassiraro appointment rescheduled to late March" |
+| `relationship` | Never | "Desiree Plata is a collaborator on the Universal Climate course" |
+| `preference` | Never | Graduates to preferences.json rules |
+
+These memories are loaded into both bot and digest prompts, giving Claudette continuity across conversations.
+
+Old resolved memories are automatically compacted into summaries to keep the store lean.
+
+### Preferences and thread dismissals (`preferences.json`)
+
+When you tell Claudette an email is handled ("Cap One is dealt with"), the bot dismisses the Gmail thread by ID — it won't appear in future digests. Dismissed threads auto-expire after 30 days.
+
+Lasting preference rules are extracted from feedback and applied to all future digests:
 
 ```json
 {
-  "rules": ["Never flag Vercel deployment emails", "Culture Lab is passive — no prep needed"],
+  "rules": ["Always flag emails from Desiree Plata as high priority"],
   "senders_always_flag": ["important-person@example.com"],
   "senders_never_flag": ["noreply@vercel.com"],
+  "dismissed_threads": [],
   "feedback_log": []
 }
 ```
