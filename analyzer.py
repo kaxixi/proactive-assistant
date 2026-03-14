@@ -28,7 +28,7 @@ def generate_daily_digest(
     email_summary = []
     for e in flagged_emails:
         email_summary.append(
-            f"- Subject: {e.subject}, From: {e.sender_name} <{e.sender}>, "
+            f"- [thread:{e.thread_id}] Subject: {e.subject}, From: {e.sender_name} <{e.sender}>, "
             f"Age: {e.age_days} days, Reason: {e.reason}, Urgency: {e.urgency}, "
             f"Snippet: {e.snippet}"
         )
@@ -77,7 +77,8 @@ Guidelines:
 - Erez can reply to this message with feedback or questions
 - If Erez's priorities list is available, cross-reference emails and meetings against it — highlight anything that connects to a current priority
 - Use RECENT CONTEXT to avoid re-flagging resolved items and to reference ongoing situations naturally
-- Check PREVIOUSLY DISMISSED EMAILS before flagging anything. If an email matches a dismissed subject/sender, only include it if there is clearly a NEW issue (e.g., a new charge, a new question). If it looks like the same issue Erez already handled, skip it entirely. Use your judgment.
+- Check PREVIOUSLY DISMISSED EMAILS before flagging anything. If an email has the same thread ID as a dismissed thread, skip it — it's the exact same conversation. If the thread ID differs but the sender/topic matches a dismissal, use your judgment: only include it if there is clearly a NEW issue (e.g., a new charge, a new question). If it looks like the same issue Erez already handled, skip it.
+- Use historical context (from weekly/monthly summaries) to understand longer-term patterns and avoid repeating issues that were resolved weeks ago.
 """
 
     response = _get_client().messages.create(

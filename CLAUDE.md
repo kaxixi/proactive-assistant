@@ -12,7 +12,7 @@ A daily automation system that acts as a proactive personal assistant, delivered
 - **priorities.py** — Fetches a published priorities list (URL configurable via PRIORITIES_URL env var).
 - **drive_search.py** — Google Drive file search.
 - **dropbox_search.py** — Dropbox file search.
-- **memory.py** — Episodic memory system. After each interaction, Claude extracts key facts into memory.json. Loaded into both bot and digest prompts for continuity across conversations.
+- **memory.py** — Episodic memory system with hierarchical compaction. After each interaction, Claude extracts key facts into memory.json. Individual memories roll up into weekly → monthly → yearly summaries to stay bounded over decades. Loaded into both bot and digest prompts with tiered priority (pending > recent facts > relationships > historical summaries).
 - **preferences.py** — Learning system. Stores rules, sender preferences, dismissed threads, and feedback log in preferences.json.
 - **google_auth.py** — Shared Google OAuth2 (Gmail, Calendar, Drive).
 - **config.py** — Loads all config from .env with `override=True`. Includes DIGEST_HOUR/DIGEST_MINUTE.

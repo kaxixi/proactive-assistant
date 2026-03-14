@@ -1,4 +1,9 @@
-"""Memory system — extracts and stores key facts from conversations and digests."""
+"""Memory system — extracts and stores key facts from conversations and digests.
+
+Hierarchical compaction keeps the store bounded over decades:
+  Individual memories (this week) → weekly summaries → monthly → yearly.
+Relationships and preferences are never compacted or expired.
+"""
 
 import json
 import logging
@@ -19,13 +24,17 @@ MEMORY_FILE = os.path.join(PROJECT_DIR, "memory.json")
 EXPIRY_DAYS = {
     "resolved": 14,
     "pending": 30,
-    "relationship": None,  # no expiry — relationships persist
+    "relationship": None,  # no expiry
     "fact": 60,
-    "preference": None,  # no expiry — graduates to preferences.py rules
+    "preference": None,  # no expiry
 }
+
+# Compactable types — these roll up into summaries. Others are permanent.
+COMPACTABLE_TYPES = {"resolved", "fact"}
 
 DEFAULT_MEMORY = {
     "memories": [],
+    "summaries": {"weekly": [], "monthly": [], "yearly": []},
     "last_compaction": None,
 }
 
@@ -56,17 +65,30 @@ Interaction ({source}):
 {conversation_text}"""
 
 
+# ---------------------------------------------------------------------------
+# Core load/save
+# ---------------------------------------------------------------------------
+
 def load_memories() -> dict:
     if os.path.exists(MEMORY_FILE):
         with open(MEMORY_FILE) as f:
-            return json.load(f)
-    return DEFAULT_MEMORY.copy()
+            data = json.load(f)
+    else:
+        data = DEFAULT_MEMORY.copy()
+    # Migration: ensure summaries structure exists
+    if "summaries" not in data:
+        data["summaries"] = {"weekly": [], "monthly": [], "yearly": []}
+    return data
 
 
 def save_memories(data: dict):
     with open(MEMORY_FILE, "w") as f:
         json.dump(data, f, indent=2, default=str)
 
+
+# ---------------------------------------------------------------------------
+# Add and retrieve memories
+# ---------------------------------------------------------------------------
 
 def add_memories(new_memories: list[dict]):
     """Append new memories, assigning IDs and expiry dates."""
@@ -93,8 +115,8 @@ def add_memories(new_memories: list[dict]):
     save_memories(data)
 
 
-def get_active_memories(max_count: int = 50) -> list[dict]:
-    """Return non-expired memories, pruning expired ones."""
+def get_active_memories() -> list[dict]:
+    """Return non-expired individual memories, pruning expired ones."""
     data = load_memories()
     now = datetime.now(timezone.utc)
     active = []
@@ -111,32 +133,89 @@ def get_active_memories(max_count: int = 50) -> list[dict]:
         data["memories"] = active
         save_memories(data)
 
-    # Sort by recency, return most recent
-    active.sort(key=lambda m: m["created_at"], reverse=True)
-    return active[:max_count]
+    return active
 
+
+# ---------------------------------------------------------------------------
+# Prompt injection — tiered budget allocation
+# ---------------------------------------------------------------------------
 
 def get_memories_for_prompt(max_chars: int = 2000) -> str:
-    """Format active memories as text for injection into prompts."""
-    memories = get_active_memories()
-    if not memories:
+    """Format memories for injection into prompts with tiered priority."""
+    data = load_memories()
+    now = datetime.now(timezone.utc)
+
+    # Get active (non-expired) individual memories
+    active = [
+        m for m in data["memories"]
+        if not m.get("expires_at") or datetime.fromisoformat(m["expires_at"]) > now
+    ]
+
+    if not active and not any(data["summaries"].values()):
         return ""
 
-    # Group by type, prioritize: pending > fact > relationship > resolved > preference
-    type_order = {"pending": 0, "fact": 1, "relationship": 2, "resolved": 3, "preference": 4}
-    memories.sort(key=lambda m: (type_order.get(m["type"], 5), m["created_at"]))
+    # Partition individual memories
+    pending = [m for m in active if m["type"] == "pending"]
+    relationships = [m for m in active if m["type"] == "relationship"]
+    preferences = [m for m in active if m["type"] == "preference"]
 
-    lines = []
-    current_len = 0
-    for mem in memories:
-        line = f"- [{mem['type']}] {mem['content']}"
-        if current_len + len(line) > max_chars:
-            break
-        lines.append(line)
-        current_len += len(line) + 1
+    seven_days_ago = (now - timedelta(days=7)).isoformat()
+    three_days_ago = (now - timedelta(days=3)).isoformat()
+    recent_facts = [m for m in active if m["type"] == "fact" and m["created_at"] >= seven_days_ago]
+    recent_resolved = [m for m in active if m["type"] == "resolved" and m["created_at"] >= three_days_ago]
 
-    return "\n".join(lines)
+    sections = []
+    used = 0
 
+    # Tier 1 (~40%): pending, relationships, preferences — must-include
+    tier1_budget = int(max_chars * 0.4)
+    tier1_lines = []
+    for m in pending + relationships + preferences:
+        line = f"- [{m['type']}] {m['content']}"
+        if used + len(line) + 1 <= tier1_budget:
+            tier1_lines.append(line)
+            used += len(line) + 1
+    if tier1_lines:
+        sections.append("\n".join(tier1_lines))
+
+    # Tier 2 (~30%): recent facts and resolved items
+    tier2_limit = used + int(max_chars * 0.3)
+    tier2_lines = []
+    for m in sorted(recent_facts + recent_resolved, key=lambda x: x["created_at"], reverse=True):
+        line = f"- [{m['type']}] {m['content']}"
+        if used + len(line) + 1 <= tier2_limit:
+            tier2_lines.append(line)
+            used += len(line) + 1
+    if tier2_lines:
+        sections.append("\n".join(tier2_lines))
+
+    # Tier 3 (remaining): historical summaries
+    summaries = data.get("summaries", {})
+    summary_lines = []
+    for weekly in sorted(summaries.get("weekly", []), key=lambda s: s["period"], reverse=True)[:3]:
+        line = f"- [week {weekly['period']}] {weekly['content']}"
+        if used + len(line) + 1 <= max_chars:
+            summary_lines.append(line)
+            used += len(line) + 1
+    for monthly in sorted(summaries.get("monthly", []), key=lambda s: s["period"], reverse=True)[:1]:
+        line = f"- [month {monthly['period']}] {monthly['content']}"
+        if used + len(line) + 1 <= max_chars:
+            summary_lines.append(line)
+            used += len(line) + 1
+    for yearly in sorted(summaries.get("yearly", []), key=lambda s: s["period"], reverse=True)[:1]:
+        line = f"- [year {yearly['period']}] {yearly['content']}"
+        if used + len(line) + 1 <= max_chars:
+            summary_lines.append(line)
+            used += len(line) + 1
+    if summary_lines:
+        sections.append("Historical context:\n" + "\n".join(summary_lines))
+
+    return "\n\n".join(sections)
+
+
+# ---------------------------------------------------------------------------
+# Memory extraction from conversations
+# ---------------------------------------------------------------------------
 
 def extract_memories(conversation_text: str, source: str = "bot") -> list[dict]:
     """Use Claude to extract memories from a conversation. Returns parsed list."""
@@ -160,7 +239,6 @@ def extract_memories(conversation_text: str, source: str = "bot") -> list[dict]:
         memories = json.loads(raw)
         if not isinstance(memories, list):
             return []
-        # Tag with source
         for mem in memories:
             mem["source"] = source
         logger.info(f"Extracted {len(memories)} memories from {source}")
@@ -173,7 +251,6 @@ def extract_memories(conversation_text: str, source: str = "bot") -> list[dict]:
 def extract_and_store(conversation_text: str, source: str = "bot"):
     """Extract memories from text and store them. Non-fatal on failure."""
     try:
-        # Skip trivially short interactions
         if len(conversation_text) < 50:
             return
         memories = extract_memories(conversation_text, source)
@@ -183,67 +260,208 @@ def extract_and_store(conversation_text: str, source: str = "bot"):
         logger.warning(f"Memory extract_and_store failed (non-fatal): {e}")
 
 
+# ---------------------------------------------------------------------------
+# Hierarchical compaction
+# ---------------------------------------------------------------------------
+
+def _iso_week(dt: datetime) -> str:
+    """Return ISO week string like '2026-W10'."""
+    iso = dt.isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def _month_key(dt: datetime) -> str:
+    """Return month string like '2026-03'."""
+    return dt.strftime("%Y-%m")
+
+
+def _year_key(dt: datetime) -> str:
+    return dt.strftime("%Y")
+
+
+def _summarize_with_claude(items_text: str, level: str, period: str) -> str:
+    """Ask Claude to summarize a batch of memories into a compact summary.
+    Returns plain text summary (1-3 sentences)."""
+    prompts = {
+        "weekly": f"Summarize these events from {period} into 1-2 brief sentences capturing what was important. Return ONLY the summary text.\n\n{items_text}",
+        "monthly": f"Summarize these weekly summaries from {period} into 1-2 sentences capturing the key themes. Return ONLY the summary text.\n\n{items_text}",
+        "yearly": f"Summarize these monthly summaries from {period} into 2-3 sentences capturing the major themes and events. Return ONLY the summary text.\n\n{items_text}",
+    }
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=256,
+        messages=[{"role": "user", "content": prompts[level]}],
+    )
+    raw = response.content[0].text.strip()
+    # Strip markdown fences if present
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+    return raw
+
+
+def _compact_to_weekly(data: dict, now: datetime, max_periods: int = 5):
+    """Summarize individual memories older than 7 days into weekly summaries."""
+    cutoff = now - timedelta(days=7)
+    existing_periods = {s["period"] for s in data["summaries"]["weekly"]}
+
+    # Find compactable memories older than cutoff
+    old_memories = [
+        m for m in data["memories"]
+        if m["type"] in COMPACTABLE_TYPES
+        and datetime.fromisoformat(m["created_at"]) < cutoff
+    ]
+
+    if not old_memories:
+        return
+
+    # Group by ISO week
+    by_week: dict[str, list] = {}
+    for m in old_memories:
+        week = _iso_week(datetime.fromisoformat(m["created_at"]))
+        by_week.setdefault(week, []).append(m)
+
+    periods_processed = 0
+    for week, memories in sorted(by_week.items()):
+        if week in existing_periods:
+            continue
+        if len(memories) < 3:
+            continue
+        if periods_processed >= max_periods:
+            break
+
+        items_text = "\n".join(f"- {m['content']}" for m in memories)
+        try:
+            summary_text = _summarize_with_claude(items_text, "weekly", week)
+            data["summaries"]["weekly"].append({
+                "id": str(uuid.uuid4()),
+                "period": week,
+                "content": summary_text,
+                "source_count": len(memories),
+                "created_at": now.isoformat(),
+            })
+            # Remove consumed individual memories
+            consumed_ids = {m["id"] for m in memories}
+            data["memories"] = [m for m in data["memories"] if m["id"] not in consumed_ids]
+            periods_processed += 1
+            logger.info(f"Weekly compaction: {week} — {len(memories)} memories → summary")
+        except Exception as e:
+            logger.warning(f"Weekly compaction failed for {week}: {e}")
+
+
+def _compact_to_monthly(data: dict, now: datetime, max_periods: int = 3):
+    """Summarize weekly summaries older than 30 days into monthly summaries."""
+    cutoff = now - timedelta(days=30)
+    existing_periods = {s["period"] for s in data["summaries"]["monthly"]}
+
+    old_weeklies = [
+        s for s in data["summaries"]["weekly"]
+        if datetime.fromisoformat(s["created_at"]) < cutoff
+    ]
+
+    if not old_weeklies:
+        return
+
+    # Group by month — derive month from the period string (e.g., "2026-W10" → look up actual date)
+    by_month: dict[str, list] = {}
+    for s in old_weeklies:
+        # Parse ISO week to get the month
+        parts = s["period"].split("-W")
+        year, week = int(parts[0]), int(parts[1])
+        dt = datetime.fromisocalendar(year, week, 1)
+        month = f"{dt.year}-{dt.month:02d}"
+        by_month.setdefault(month, []).append(s)
+
+    periods_processed = 0
+    for month, weeklies in sorted(by_month.items()):
+        if month in existing_periods:
+            continue
+        if len(weeklies) < 2:
+            continue
+        if periods_processed >= max_periods:
+            break
+
+        items_text = "\n".join(f"- {s['content']}" for s in weeklies)
+        try:
+            summary_text = _summarize_with_claude(items_text, "monthly", month)
+            data["summaries"]["monthly"].append({
+                "id": str(uuid.uuid4()),
+                "period": month,
+                "content": summary_text,
+                "source_count": len(weeklies),
+                "created_at": now.isoformat(),
+            })
+            consumed_ids = {s["id"] for s in weeklies}
+            data["summaries"]["weekly"] = [s for s in data["summaries"]["weekly"] if s["id"] not in consumed_ids]
+            periods_processed += 1
+            logger.info(f"Monthly compaction: {month} — {len(weeklies)} weekly summaries → summary")
+        except Exception as e:
+            logger.warning(f"Monthly compaction failed for {month}: {e}")
+
+
+def _compact_to_yearly(data: dict, now: datetime):
+    """Summarize monthly summaries from completed years into yearly summaries."""
+    current_year = str(now.year)
+    existing_periods = {s["period"] for s in data["summaries"]["yearly"]}
+
+    # Only compact completed years
+    old_monthlies = [
+        s for s in data["summaries"]["monthly"]
+        if s["period"][:4] < current_year
+    ]
+
+    if not old_monthlies:
+        return
+
+    by_year: dict[str, list] = {}
+    for s in old_monthlies:
+        year = s["period"][:4]
+        by_year.setdefault(year, []).append(s)
+
+    for year, monthlies in sorted(by_year.items()):
+        if year in existing_periods:
+            continue
+        if len(monthlies) < 3:
+            continue
+
+        items_text = "\n".join(f"- {s['content']}" for s in monthlies)
+        try:
+            summary_text = _summarize_with_claude(items_text, "yearly", year)
+            data["summaries"]["yearly"].append({
+                "id": str(uuid.uuid4()),
+                "period": year,
+                "content": summary_text,
+                "source_count": len(monthlies),
+                "created_at": now.isoformat(),
+            })
+            consumed_ids = {s["id"] for s in monthlies}
+            data["summaries"]["monthly"] = [s for s in data["summaries"]["monthly"] if s["id"] not in consumed_ids]
+            logger.info(f"Yearly compaction: {year} — {len(monthlies)} monthly summaries → summary")
+        except Exception as e:
+            logger.warning(f"Yearly compaction failed for {year}: {e}")
+
+
 def compact_memories():
-    """Summarize old memories to keep the store compact. Runs if count > 100 or weekly."""
+    """Hierarchical memory compaction: individual → weekly → monthly → yearly."""
     data = load_memories()
     now = datetime.now(timezone.utc)
 
-    last = data.get("last_compaction")
-    count = len(data["memories"])
-    if last:
-        days_since = (now - datetime.fromisoformat(last)).days
-        if count < 100 and days_since < 7:
-            return
+    # Stage 1: individual → weekly (resolved/fact memories older than 7 days)
+    _compact_to_weekly(data, now)
 
-    if count < 20:
-        data["last_compaction"] = now.isoformat()
-        save_memories(data)
-        return
+    # Stage 2: weekly → monthly (weekly summaries older than 30 days)
+    _compact_to_monthly(data, now)
 
-    # Group resolved memories older than 7 days and summarize
-    old_resolved = [
+    # Stage 3: monthly → yearly (completed years only)
+    _compact_to_yearly(data, now)
+
+    # Prune expired individual memories
+    data["memories"] = [
         m for m in data["memories"]
-        if m["type"] == "resolved"
-        and (now - datetime.fromisoformat(m["created_at"])).days > 7
+        if not m.get("expires_at") or datetime.fromisoformat(m["expires_at"]) > now
     ]
 
-    if len(old_resolved) < 5:
-        data["last_compaction"] = now.isoformat()
-        save_memories(data)
-        return
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        items = "\n".join(f"- {m['content']}" for m in old_resolved)
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=256,
-            messages=[{"role": "user", "content": (
-                "Summarize these resolved items into 1-3 brief summary statements. "
-                "Return a JSON array of objects with 'content' and 'tags' fields.\n\n"
-                f"{items}"
-            )}],
-        )
-        summaries = json.loads(response.content[0].text.strip())
-
-        # Remove old resolved, add summaries
-        old_ids = {m["id"] for m in old_resolved}
-        data["memories"] = [m for m in data["memories"] if m["id"] not in old_ids]
-        for s in summaries:
-            data["memories"].append({
-                "id": str(uuid.uuid4()),
-                "type": "resolved",
-                "content": s["content"],
-                "source": "compaction",
-                "created_at": now.isoformat(),
-                "expires_at": (now + timedelta(days=14)).isoformat(),
-                "tags": s.get("tags", []),
-            })
-
-        data["last_compaction"] = now.isoformat()
-        save_memories(data)
-        logger.info(f"Compacted {len(old_resolved)} resolved memories into {len(summaries)} summaries")
-    except Exception as e:
-        logger.warning(f"Memory compaction failed (non-fatal): {e}")
-        data["last_compaction"] = now.isoformat()
-        save_memories(data)
+    data["last_compaction"] = now.isoformat()
+    save_memories(data)

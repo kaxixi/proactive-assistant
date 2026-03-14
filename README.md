@@ -275,9 +275,17 @@ After every conversation and every digest, a second Claude call extracts key fac
 | `relationship` | Never | "Desiree Plata is a collaborator on the Universal Climate course" |
 | `preference` | Never | Graduates to preferences.json rules |
 
-These memories are loaded into both bot and digest prompts, giving Claudette continuity across conversations.
+These memories are loaded into both bot and digest prompts with tiered priority: pending items first, then recent facts, then relationships, then historical summaries.
 
-Old resolved memories are automatically compacted into summaries to keep the store lean.
+#### Hierarchical compaction
+
+To stay bounded over decades of use, memories automatically roll up into summaries:
+
+- **After 7 days**: Individual resolved/fact memories compact into weekly summaries
+- **After 30 days**: Weekly summaries compact into monthly summaries
+- **After 1 year**: Monthly summaries compact into yearly summaries
+
+Relationships and preferences are never compacted. After 10 years, the memory store stays at ~130 entries (~30-50 KB) instead of growing unboundedly.
 
 ### Preferences and thread dismissals (`preferences.json`)
 

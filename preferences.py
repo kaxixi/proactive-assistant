@@ -107,7 +107,7 @@ def get_dismissed_context() -> str:
     lines = []
     for d in active:
         days_ago = (now - datetime.fromisoformat(d["dismissed_at"])).days
-        lines.append(f"- \"{d.get('subject', 'unknown')}\" — dismissed {days_ago}d ago (reason: {d.get('reason', 'handled')})")
+        lines.append(f"- [thread:{d.get('thread_id', '?')}] \"{d.get('subject', 'unknown')}\" — dismissed {days_ago}d ago (reason: {d.get('reason', 'handled')})")
     return "\n".join(lines)
 
 
