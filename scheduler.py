@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from email_monitor import scan_inbox
 from calendar_digest import get_upcoming_meetings, get_user_timezone
 from analyzer import generate_daily_digest
-from preferences import load_preferences
+from preferences import load_preferences, get_dismissed_context
 from priorities import fetch_priorities
 from memory import get_memories_for_prompt, extract_and_store, compact_memories
 from bot import send_message
@@ -65,11 +65,13 @@ async def run_daily_digest():
         logger.info("Fetching priorities...")
         priorities = fetch_priorities()
         memories_context = get_memories_for_prompt()
+        dismissed_context = get_dismissed_context()
 
         # 4. Generate digest with Claude
         logger.info("Generating digest with Claude...")
         digest = generate_daily_digest(
-            flagged_emails, meetings, prefs, priorities, memories_context
+            flagged_emails, meetings, prefs, priorities,
+            memories_context, dismissed_context,
         )
 
         # 5. Send via Telegram

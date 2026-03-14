@@ -281,9 +281,9 @@ Old resolved memories are automatically compacted into summaries to keep the sto
 
 ### Preferences and thread dismissals (`preferences.json`)
 
-When you tell Claudette an email is handled ("Cap One is dealt with"), the bot dismisses the Gmail thread by ID — it won't appear in future digests. Dismissed threads auto-expire after 30 days.
+When you tell Claudette an email is handled ("Cap One is dealt with"), the bot dismisses the Gmail thread by ID. Dismissed threads aren't hard-filtered — instead, the dismissed context (subject + reason) is passed into the digest prompt so Claude can use judgment. If a new Capital One email arrives, Claude decides: "is this the same payment issue he already handled, or a genuinely new problem?" Same issue gets skipped; new issue gets flagged.
 
-Lasting preference rules are extracted from feedback and applied to all future digests:
+Dismissed threads auto-expire after 30 days. Lasting preference rules are extracted from feedback and applied to all future digests:
 
 ```json
 {

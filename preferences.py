@@ -91,6 +91,26 @@ def get_dismissed_thread_ids() -> set:
     return ids
 
 
+def get_dismissed_context() -> str:
+    """Return dismissed threads as text for the digest prompt, so Claude can judge
+    whether new emails from the same sender/topic are truly new or duplicates."""
+    prefs = load_preferences()
+    dismissed = prefs.get("dismissed_threads", [])
+    now = datetime.now(timezone.utc)
+    active = []
+    for d in dismissed:
+        dismissed_at = datetime.fromisoformat(d["dismissed_at"])
+        if (now - dismissed_at).days < 30:
+            active.append(d)
+    if not active:
+        return ""
+    lines = []
+    for d in active:
+        days_ago = (now - datetime.fromisoformat(d["dismissed_at"])).days
+        lines.append(f"- \"{d.get('subject', 'unknown')}\" — dismissed {days_ago}d ago (reason: {d.get('reason', 'handled')})")
+    return "\n".join(lines)
+
+
 def log_feedback(feedback_type: str, detail: str):
     """Log user feedback for future analysis."""
     prefs = load_preferences()

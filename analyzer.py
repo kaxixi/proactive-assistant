@@ -20,6 +20,7 @@ def generate_daily_digest(
     preferences: dict = None,
     priorities: str = "",
     memories_context: str = "",
+    dismissed_context: str = "",
 ) -> str:
     """Generate a natural language daily digest using Claude."""
 
@@ -63,6 +64,7 @@ CALENDAR (list ALL meetings — do not skip any):
 {chr(10).join(meeting_summary) if meeting_summary else "No meetings today or tomorrow."}
 {priorities_context}{pref_context}
 {f"RECENT CONTEXT (from past interactions and digests — use this to avoid redundancy):{chr(10)}{memories_context}{chr(10)}" if memories_context else ""}
+{f"PREVIOUSLY DISMISSED EMAILS (Erez already handled these — only re-flag if a genuinely NEW issue appeared in the same thread or from the same sender):{chr(10)}{dismissed_context}{chr(10)}" if dismissed_context else ""}
 Guidelines:
 - List ALL calendar events — every single one. Non-recurring (ONE-TIME) meetings should be highlighted with extra emphasis since Erez is more likely to miss them
 - Lead with calendar, then most urgent email items
@@ -75,6 +77,7 @@ Guidelines:
 - Erez can reply to this message with feedback or questions
 - If Erez's priorities list is available, cross-reference emails and meetings against it — highlight anything that connects to a current priority
 - Use RECENT CONTEXT to avoid re-flagging resolved items and to reference ongoing situations naturally
+- Check PREVIOUSLY DISMISSED EMAILS before flagging anything. If an email matches a dismissed subject/sender, only include it if there is clearly a NEW issue (e.g., a new charge, a new question). If it looks like the same issue Erez already handled, skip it entirely. Use your judgment.
 """
 
     response = _get_client().messages.create(

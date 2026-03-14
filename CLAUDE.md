@@ -5,9 +5,9 @@ A daily automation system that acts as a proactive personal assistant, delivered
 
 ## Architecture
 - **bot.py** — Telegram bot (long-polling). Handles commands, free-text messages, and file attachments. Uses Claude tool-use for Gmail/Drive/Dropbox search.
-- **email_monitor.py** — Scans Gmail for emails at risk of being dropped (unreplied, aging, needs follow-up). Uses batch API for performance.
+- **email_monitor.py** — Scans Gmail for emails at risk of being dropped (unreplied, aging, needs follow-up). Uses batch API for performance. Does NOT filter dismissed threads — all emails pass through so Claude can judge whether a dismissed sender has a genuinely new issue.
 - **calendar_digest.py** — Fetches today's and tomorrow's meetings. Flags non-recurring events and meetings needing prep. Also exposes `get_user_timezone()` for schedule detection.
-- **analyzer.py** — Sends email + calendar + priorities data to Claude to generate a natural language digest.
+- **analyzer.py** — Sends email + calendar + priorities + memory + dismissed thread context to Claude to generate a natural language digest. Claude uses judgment to skip dismissed issues unless something genuinely new appeared.
 - **scheduler.py** — Entry point for scheduled runs. Checks user's Google Calendar timezone to decide if it's digest time, then orchestrates the full pipeline. Supports `--force` to skip the time check.
 - **priorities.py** — Fetches a published priorities list (URL configurable via PRIORITIES_URL env var).
 - **drive_search.py** — Google Drive file search.
@@ -31,6 +31,7 @@ A daily automation system that acts as a proactive personal assistant, delivered
 - **Batch Gmail API** — threads fetched in batches of 20 (not one-by-one) for ~5x speedup
 - **Preferences as JSON** — simple, human-readable, no database needed. Upgrade to SQLite if it grows.
 - **Two-layer memory** — preferences.json stores lasting rules and dismissed threads; memory.json stores episodic memories (pending tasks, resolved items, relationships, facts) with typed auto-expiry and compaction. Both are loaded into prompts.
+- **Judgment-based dismissals** — dismissed threads are not hard-filtered from the email scan. Instead, dismissed context (subject + reason) is passed into the digest prompt so Claude can judge whether a new email from the same sender/topic is the same issue or a genuinely new one.
 - **OAuth token on VM** — token.json must be generated locally (browser required) then copied to VM
 - **Timezone-aware scheduling** — timer fires every 3h, Python checks Google Calendar timezone to decide whether to send. No hardcoded timezone in the timer.
 
