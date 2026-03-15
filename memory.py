@@ -58,7 +58,8 @@ Rules:
 - If nothing worth remembering happened, return an empty array [].
 - Each memory must be self-contained — understandable without the original context.
 - Keep each "content" field to ONE sentence.
-
+- IMPORTANT: Do NOT create "pending" memories for items that appear in the ALREADY HANDLED list below. These have been explicitly dismissed or resolved by the user.
+{already_handled}
 Return ONLY valid JSON. No explanation text.
 
 Interaction ({source}):
@@ -90,8 +91,25 @@ def save_memories(data: dict):
 # Add and retrieve memories
 # ---------------------------------------------------------------------------
 
+def _tags_overlap(tags_a: list, tags_b: list) -> bool:
+    """Check if two tag lists share any person: tags or 2+ general tags."""
+    set_a = set(tags_a)
+    set_b = set(tags_b)
+    # Any shared person tag is a strong match
+    person_overlap = {t for t in set_a & set_b if t.startswith("person:")}
+    if person_overlap:
+        return True
+    # 2+ shared general tags is a weaker match
+    general_overlap = set_a & set_b - {t for t in set_a | set_b if t.startswith("person:")}
+    return len(general_overlap) >= 2
+
+
 def add_memories(new_memories: list[dict]):
-    """Append new memories, assigning IDs and expiry dates."""
+    """Append new memories, assigning IDs and expiry dates.
+
+    When adding a 'resolved' memory, removes conflicting 'pending' memories
+    about the same topic (matched by overlapping tags).
+    """
     data = load_memories()
     existing_contents = {m["content"] for m in data["memories"]}
     now = datetime.now(timezone.utc)
@@ -100,7 +118,20 @@ def add_memories(new_memories: list[dict]):
         if mem["content"] in existing_contents:
             continue
         mem_type = mem.get("type", "fact")
+        mem_tags = mem.get("tags", [])
         expiry_days = EXPIRY_DAYS.get(mem_type)
+
+        # When adding a resolved memory, remove conflicting pending memories
+        if mem_type == "resolved" and mem_tags:
+            before_count = len(data["memories"])
+            data["memories"] = [
+                m for m in data["memories"]
+                if not (m["type"] == "pending" and _tags_overlap(m.get("tags", []), mem_tags))
+            ]
+            removed = before_count - len(data["memories"])
+            if removed:
+                logger.info(f"Resolved memory superseded {removed} pending memories (tags: {mem_tags})")
+
         data["memories"].append({
             "id": str(uuid.uuid4()),
             "type": mem_type,
@@ -108,7 +139,7 @@ def add_memories(new_memories: list[dict]):
             "source": mem.get("source", "bot"),
             "created_at": now.isoformat(),
             "expires_at": (now + timedelta(days=expiry_days)).isoformat() if expiry_days else None,
-            "tags": mem.get("tags", []),
+            "tags": mem_tags,
         })
         existing_contents.add(mem["content"])
 
@@ -217,13 +248,38 @@ def get_memories_for_prompt(max_chars: int = 2000) -> str:
 # Memory extraction from conversations
 # ---------------------------------------------------------------------------
 
+def _get_handled_context() -> str:
+    """Build a list of resolved/dismissed items to prevent re-creating pending memories."""
+    data = load_memories()
+    resolved = [m for m in data["memories"] if m["type"] == "resolved"]
+
+    lines = []
+    for m in resolved:
+        lines.append(f"- {m['content']}")
+
+    # Also include dismissed threads from preferences
+    try:
+        from preferences import get_dismissed_context
+        dismissed = get_dismissed_context()
+        if dismissed:
+            lines.append(dismissed)
+    except Exception:
+        pass
+
+    if not lines:
+        return ""
+    return "\nALREADY HANDLED (do not create pending items for these):\n" + "\n".join(lines) + "\n"
+
+
 def extract_memories(conversation_text: str, source: str = "bot") -> list[dict]:
     """Use Claude to extract memories from a conversation. Returns parsed list."""
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        handled = _get_handled_context()
         prompt = EXTRACTION_PROMPT.format(
             source=source,
             conversation_text=conversation_text,
+            already_handled=handled,
         )
         response = client.messages.create(
             model=CLAUDE_MODEL,
@@ -464,4 +520,82 @@ def compact_memories():
     ]
 
     data["last_compaction"] = now.isoformat()
+    save_memories(data)
+
+
+# ---------------------------------------------------------------------------
+# Monthly memory review
+# ---------------------------------------------------------------------------
+
+REVIEW_PROMPT = """You are a memory auditor for a personal assistant called Claudette.
+Review the following memory store and identify issues that need the user's input.
+
+Look for:
+1. CONTRADICTIONS — a "pending" item and a "resolved" item about the same thing
+2. STALE ITEMS — "pending" items that are very old and may have been silently handled
+3. AMBIGUITIES — memories that are vague or could mean multiple things
+4. DUPLICATES — multiple memories saying essentially the same thing
+
+Current memories:
+{memories_text}
+
+Format your response as a friendly, concise Telegram message to Erez asking him to clarify the issues you found. Group by issue type. For each item, quote the memory and suggest a resolution (e.g., "Is this still pending or can I mark it resolved?"). If everything looks clean, just say so briefly.
+
+Keep it warm and short — this is Telegram, not a report."""
+
+
+def generate_memory_review() -> str | None:
+    """Generate a memory review message for the user. Returns None if memory is clean."""
+    data = load_memories()
+    memories = data["memories"]
+
+    if len(memories) < 5:
+        return None
+
+    memories_text = "\n".join(
+        f"- [{m['type']}] {m['content']} (created {m['created_at'][:10]}, tags: {m.get('tags', [])})"
+        for m in memories
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": REVIEW_PROMPT.format(memories_text=memories_text)}],
+        )
+        review = response.content[0].text.strip()
+
+        # If Claude says everything is clean, skip sending
+        clean_signals = ["everything looks clean", "no issues", "all clear", "looks good", "nothing to flag"]
+        if any(s in review.lower() for s in clean_signals):
+            logger.info("Memory review: all clean, nothing to send")
+            return None
+
+        logger.info("Memory review: found issues to raise with user")
+        return review
+    except Exception as e:
+        logger.warning(f"Memory review generation failed: {e}")
+        return None
+
+
+def should_run_monthly_review() -> bool:
+    """Check if it's time for a monthly memory review (first digest of the month)."""
+    data = load_memories()
+    last_review = data.get("last_review")
+    now = datetime.now(timezone.utc)
+
+    if last_review:
+        last_dt = datetime.fromisoformat(last_review)
+        # Same month — already reviewed
+        if last_dt.year == now.year and last_dt.month == now.month:
+            return False
+
+    return True
+
+
+def mark_review_done():
+    """Record that a monthly review has been completed."""
+    data = load_memories()
+    data["last_review"] = datetime.now(timezone.utc).isoformat()
     save_memories(data)

@@ -11,7 +11,10 @@ from calendar_digest import get_upcoming_meetings, get_user_timezone
 from analyzer import generate_daily_digest
 from preferences import load_preferences, get_dismissed_context
 from priorities import fetch_priorities
-from memory import get_memories_for_prompt, extract_and_store, compact_memories
+from memory import (
+    get_memories_for_prompt, extract_and_store, compact_memories,
+    generate_memory_review, should_run_monthly_review, mark_review_done,
+)
 from bot import send_message
 from config import DIGEST_HOUR, DIGEST_MINUTE
 
@@ -89,6 +92,17 @@ async def run_daily_digest():
             compact_memories()
         except Exception as e:
             logger.warning(f"Memory compaction failed (non-fatal): {e}")
+
+        # 8. Monthly memory review — ask Erez to resolve contradictions
+        try:
+            if should_run_monthly_review():
+                logger.info("Running monthly memory review...")
+                review = generate_memory_review()
+                if review:
+                    await send_message(f"🧠 Monthly memory check-in:\n\n{review}")
+                mark_review_done()
+        except Exception as e:
+            logger.warning(f"Memory review failed (non-fatal): {e}")
 
     except FileNotFoundError as e:
         error_msg = f"⚠️ Setup incomplete: {e}"
