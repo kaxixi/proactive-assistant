@@ -4,7 +4,10 @@ A daily automation system that monitors your Gmail inbox and Google Calendar, ge
 
 ## What it does
 
-- **Morning digest** — Scans your inbox for emails you might be dropping (unreplied, aging, needs follow-up), lists today's and tomorrow's meetings, cross-references against your current priorities, and sends you a prioritized summary each morning via Telegram
+- **Morning digest** — Scans your inbox for emails you might be dropping (unreplied, aging, needs follow-up), lists upcoming meetings, cross-references against your current priorities, and sends you a prioritized summary each morning via Telegram. Three modes:
+  - **Weekday (Mon–Fri)**: Today + tomorrow, urgent actions
+  - **Saturday**: Weekend overview + "if you have time" items from the week
+  - **Sunday**: Full week-ahead planning — highlights non-recurring meetings, upcoming deadlines, and sets the tone for the week. Includes weekly memory review
 - **Interactive bot** — Reply to any message with questions or feedback. Search Gmail, Google Drive, and Dropbox by chatting naturally
 - **Persistent memory** — Remembers key facts across conversations: pending tasks, resolved items, who people are, and what you've told it. Say "Capital One is handled" and it won't come up again
 - **Learning system** — Give feedback ("don't flag newsletters from X") and it learns lasting preferences

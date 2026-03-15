@@ -579,16 +579,15 @@ def generate_memory_review() -> str | None:
         return None
 
 
-def should_run_monthly_review() -> bool:
-    """Check if it's time for a monthly memory review (first digest of the month)."""
+def should_run_review() -> bool:
+    """Check if a memory review is due (at most once per week)."""
     data = load_memories()
     last_review = data.get("last_review")
     now = datetime.now(timezone.utc)
 
     if last_review:
-        last_dt = datetime.fromisoformat(last_review)
-        # Same month — already reviewed
-        if last_dt.year == now.year and last_dt.month == now.month:
+        days_since = (now - datetime.fromisoformat(last_review)).days
+        if days_since < 6:
             return False
 
     return True

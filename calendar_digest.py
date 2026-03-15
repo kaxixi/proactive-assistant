@@ -70,23 +70,23 @@ def _check_needs_prep(summary: str, description: str, attendees: list) -> tuple[
     return False, ""
 
 
-def get_upcoming_meetings() -> list[Meeting]:
-    """Fetch today's and tomorrow's meetings."""
+def get_meetings_for_range(days: int = 2) -> list[Meeting]:
+    """Fetch meetings for a given number of days starting from today."""
     service = _get_calendar_service()
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow_end = today_start + timedelta(days=2)
+    range_end = today_start + timedelta(days=days)
 
     events_result = service.events().list(
         calendarId="primary",
         timeMin=today_start.isoformat(),
-        timeMax=tomorrow_end.isoformat(),
+        timeMax=range_end.isoformat(),
         singleEvents=True,
         orderBy="startTime",
     ).execute()
 
     events = events_result.get("items", [])
-    logger.info(f"Found {len(events)} events for today/tomorrow")
+    logger.info(f"Found {len(events)} events for next {days} days")
 
     meetings = []
     for event in events:
@@ -130,6 +130,11 @@ def get_upcoming_meetings() -> list[Meeting]:
         ))
 
     return meetings
+
+
+def get_upcoming_meetings() -> list[Meeting]:
+    """Fetch today's and tomorrow's meetings (weekday digest)."""
+    return get_meetings_for_range(days=2)
 
 
 def format_calendar_digest(meetings: list[Meeting]) -> str:

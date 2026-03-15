@@ -21,6 +21,10 @@
 - [ ] Cost monitoring — track Claude API usage per day/month
 
 ## Done
+- [x] Weekly digest cadence — weekday/weekend/week-ahead digest modes with Sunday memory review
+- [x] Episodic memory system with hierarchical compaction (decades-scale)
+- [x] Thread dismissals with judgment-based re-surfacing
+- [x] Gmail search tool for interactive bot
 - [x] GitHub repo with sanitized code: https://github.com/kaxixi/proactive-assistant
 - [x] Detailed setup guide / README for new users
 - [x] Timezone-aware digest scheduling (reads Google Calendar timezone, auto-adjusts)

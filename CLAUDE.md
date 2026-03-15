@@ -6,9 +6,9 @@ A daily automation system that acts as a proactive personal assistant, delivered
 ## Architecture
 - **bot.py** — Telegram bot (long-polling). Handles commands, free-text messages, and file attachments. Uses Claude tool-use for Gmail/Drive/Dropbox search.
 - **email_monitor.py** — Scans Gmail for emails at risk of being dropped (unreplied, aging, needs follow-up). Uses batch API for performance. Does NOT filter dismissed threads — all emails pass through so Claude can judge whether a dismissed sender has a genuinely new issue.
-- **calendar_digest.py** — Fetches today's and tomorrow's meetings. Flags non-recurring events and meetings needing prep. Also exposes `get_user_timezone()` for schedule detection.
-- **analyzer.py** — Sends email + calendar + priorities + memory + dismissed thread context to Claude to generate a natural language digest. Claude uses judgment to skip dismissed issues unless something genuinely new appeared.
-- **scheduler.py** — Entry point for scheduled runs. Checks user's Google Calendar timezone to decide if it's digest time, then orchestrates the full pipeline. Supports `--force` to skip the time check.
+- **calendar_digest.py** — Fetches today's and tomorrow's meetings. Flags non-recurring events and meetings needing prep. Also exposes `get_user_timezone()` for schedule detection and `get_meetings_for_range()` for multi-day views (weekend, week-ahead).
+- **analyzer.py** — Sends email + calendar + priorities + memory + dismissed thread context to Claude to generate a natural language digest. Three digest modes: weekday (urgent actions), weekend (relaxed, "if you have time"), week-ahead (coming week overview highlighting non-recurring meetings). Claude uses judgment to skip dismissed issues unless something genuinely new appeared.
+- **scheduler.py** — Entry point for scheduled runs. Checks user's Google Calendar timezone to decide if it's digest time, then orchestrates the full pipeline. Picks digest type by day of week: weekday (Mon-Fri), weekend (Sat), week-ahead (Sun). Supports `--force` to skip the time check.
 - **priorities.py** — Fetches a published priorities list (URL configurable via PRIORITIES_URL env var).
 - **drive_search.py** — Google Drive file search.
 - **dropbox_search.py** — Dropbox file search.
