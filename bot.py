@@ -179,6 +179,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status — check if all services are connected\n"
         "/digest — trigger a digest right now\n"
         "/search <query> — search Drive and Dropbox\n"
+        "/availability [this/next week] — show free meeting slots\n"
+        "/morningavailability [this/next week] — morning slots only\n"
         "/help — show this message\n\n"
         "You can also just reply to any message with feedback or questions!"
     )
@@ -235,6 +237,36 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"No files found matching '{query}' in Drive or Dropbox.")
 
     await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_availability(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show available meeting slots for a week."""
+    if not _is_authorized(update):
+        return
+    args = " ".join(context.args) if context.args else ""
+    await update.message.reply_text("Checking calendar...")
+    try:
+        from availability import compute_availability
+        result = compute_availability(args=args, morning_only=False)
+        await update.message.reply_text(result, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Availability failed: {e}", exc_info=True)
+        await update.message.reply_text(f"Error computing availability: {e}")
+
+
+async def cmd_morningavailability(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show available morning slots for a week."""
+    if not _is_authorized(update):
+        return
+    args = " ".join(context.args) if context.args else ""
+    await update.message.reply_text("Checking calendar...")
+    try:
+        from availability import compute_availability
+        result = compute_availability(args=args, morning_only=True)
+        await update.message.reply_text(result, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Availability failed: {e}", exc_info=True)
+        await update.message.reply_text(f"Error computing availability: {e}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -480,6 +512,8 @@ def run_bot():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("search", cmd_search))
+    app.add_handler(CommandHandler("availability", cmd_availability))
+    app.add_handler(CommandHandler("morningavailability", cmd_morningavailability))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
