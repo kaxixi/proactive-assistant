@@ -54,19 +54,22 @@ def add_sender_never_flag(email: str):
         save_preferences(prefs)
 
 
-def dismiss_thread(thread_id: str, subject: str = "", reason: str = ""):
+def dismiss_thread(thread_id: str, subject: str = "", reason: str = "", sender_email: str = ""):
     """Dismiss a thread so it won't appear in future digests."""
     prefs = load_preferences()
     dismissed = prefs.get("dismissed_threads", [])
     # Don't add duplicates
     if any(d["thread_id"] == thread_id for d in dismissed):
         return
-    dismissed.append({
+    entry = {
         "thread_id": thread_id,
         "subject": subject,
         "reason": reason,
         "dismissed_at": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    if sender_email:
+        entry["sender_email"] = sender_email.lower()
+    dismissed.append(entry)
     prefs["dismissed_threads"] = dismissed
     save_preferences(prefs)
     logger.info(f"Dismissed thread {thread_id}: {subject} ({reason})")

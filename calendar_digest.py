@@ -71,10 +71,16 @@ def _check_needs_prep(summary: str, description: str, attendees: list) -> tuple[
 
 
 def get_meetings_for_range(days: int = 2) -> list[Meeting]:
-    """Fetch meetings for a given number of days starting from today."""
+    """Fetch meetings for a given number of days starting from today in user's timezone."""
+    from zoneinfo import ZoneInfo
     service = _get_calendar_service()
-    now = datetime.now(timezone.utc)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tz_name = get_user_timezone()
+    tz = ZoneInfo(tz_name)
+    local_now = datetime.now(tz)
+    today_local = local_now.date()
+
+    # Use local midnight as the range start
+    today_start = datetime(today_local.year, today_local.month, today_local.day, tzinfo=tz)
     range_end = today_start + timedelta(days=days)
 
     events_result = service.events().list(
@@ -98,8 +104,8 @@ def get_meetings_for_range(days: int = 2) -> list[Meeting]:
             start = datetime.fromisoformat(start_raw)
             end = datetime.fromisoformat(end_raw)
         else:
-            start = datetime.strptime(start_raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            end = datetime.strptime(end_raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            start = datetime.strptime(start_raw, "%Y-%m-%d").replace(tzinfo=tz)
+            end = datetime.strptime(end_raw, "%Y-%m-%d").replace(tzinfo=tz)
 
         summary = event.get("summary", "(no title)")
         description = event.get("description", "")
@@ -114,7 +120,7 @@ def get_meetings_for_range(days: int = 2) -> list[Meeting]:
             needs_prep = False  # don't auto-flag, but we'll pass the info to Claude
             prep_reason = ""
 
-        is_tomorrow = start.date() > now.date()
+        is_tomorrow = start.date() > today_local
 
         meetings.append(Meeting(
             summary=summary,

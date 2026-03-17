@@ -137,13 +137,17 @@ def _dismiss_email(query: str, reason: str) -> str:
 
     msg = service.users().messages().get(
         userId="me", id=messages[0]["id"], format="metadata",
-        metadataHeaders=["Subject"],
+        metadataHeaders=["Subject", "From"],
     ).execute()
     thread_id = msg["threadId"]
     headers = msg.get("payload", {}).get("headers", [])
     subject = next((h["value"] for h in headers if h["name"].lower() == "subject"), "")
+    from_header = next((h["value"] for h in headers if h["name"].lower() == "from"), "")
+    # Extract email address from "Name <email>" format
+    import email.utils
+    _, sender_email = email.utils.parseaddr(from_header)
 
-    dismiss_thread(thread_id, subject=subject, reason=reason)
+    dismiss_thread(thread_id, subject=subject, reason=reason, sender_email=sender_email)
     return f"Dismissed thread: \"{subject}\" (reason: {reason}). It won't appear in future digests."
 
 
@@ -167,6 +171,62 @@ def _execute_tool(tool_name: str, tool_input: dict) -> str:
     except Exception as e:
         logger.error(f"Tool {tool_name} failed: {e}")
         return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Shared system prompt builder
+# ---------------------------------------------------------------------------
+
+def _build_system_prompt(extra_instructions: str = "") -> str:
+    """Build the system prompt shared by handle_message and handle_document.
+
+    Args:
+        extra_instructions: additional instructions appended for specific contexts
+            (e.g., document handling).
+    """
+    prefs = load_preferences()
+    rules_text = "\n".join(f"- {r}" for r in prefs.get("rules", [])) or "None yet"
+
+    digest_section = ""
+    if _last_digest:
+        digest_section = f"\n<last_digest>\n{_last_digest}\n</last_digest>\n"
+
+    from memory import get_memories_for_prompt
+    memory_context = get_memories_for_prompt()
+    memory_section = ""
+    if memory_context:
+        memory_section = f"\n<memory>\n{memory_context}\n</memory>\n"
+
+    dismiss_instructions = """When Erez says something is handled, resolved, done, taken care of, or not relevant — IMMEDIATELY use the dismiss_email tool. This is critical.
+Without dismissing, the item will reappear in future digests. Erez may not remember he already dealt with it, and might accidentally re-send an email or re-do work he's already completed.
+
+Examples of when to dismiss:
+- "I already replied to that" → dismiss with reason "replied"
+- "That's handled" → dismiss with reason "handled"
+- "Not relevant" / "Don't need that" → dismiss with reason "not relevant"
+- "I talked to them about it" → dismiss with reason "resolved offline"
+
+When in doubt about whether Erez means to dismiss, dismiss it. It's better to dismiss and have him re-flag than to keep nagging about handled items."""
+
+    system_prompt = f"""You are Claudette, a proactive personal assistant for a behavioral science researcher named Erez.
+You communicate via Telegram.
+
+<preferences>
+{rules_text}
+</preferences>
+{digest_section}{memory_section}
+You have tools to search Gmail, Google Drive, and Dropbox, and to dismiss email threads from future digests.
+
+Instructions:
+- Respond warmly and concisely (this is Telegram, not email).
+- {dismiss_instructions}
+- If he's asking a question, answer it directly.
+- If he's asking you to find a file or look something up, use the search tools.
+- Use your memory context to maintain continuity — reference past conversations naturally, avoid re-asking about things you already know.
+- Extract any LASTING preference rules from his feedback. Return them on lines starting with "RULE:" — these will be saved automatically. Only extract rules that represent lasting preferences (e.g., "Desiree's emails are always important"), not one-time dismissals (use the dismiss tool for those instead).
+{extra_instructions}"""
+
+    return system_prompt
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -279,33 +339,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     log_feedback("user_message", user_text)
 
-    prefs = load_preferences()
-    rules_text = "\n".join(f"- {r}" for r in prefs.get("rules", [])) or "None yet"
-
-    digest_context = ""
-    if _last_digest:
-        digest_context = f"\nThe most recent digest I sent:\n{_last_digest}\n"
-
-    from memory import get_memories_for_prompt
-    memory_context = get_memories_for_prompt()
-    memory_section = f"\nRecent memory (things you remember from past interactions):\n{memory_context}\n" if memory_context else ""
-
-    system_prompt = f"""You are Claudette, a proactive personal assistant for a behavioral science researcher named Erez.
-You communicate via Telegram.
-
-Current learned preferences:
-{rules_text}
-{digest_context}{memory_section}
-You have tools to search Gmail, Google Drive, and Dropbox, and to dismiss email threads from future digests.
-
-Instructions:
-- Respond warmly and concisely (this is Telegram, not email)
-- If Erez says he's handled an email, it's resolved, or it's not relevant — use the dismiss_email tool to suppress it from future digests. This is important! Without dismissing, it will keep showing up.
-- If he's asking a question, answer it directly
-- If he's asking you to find a file or look something up, use the search tools
-- Use your memory context to maintain continuity — reference past conversations naturally, avoid re-asking about things you already know
-- Extract any LASTING preference rules from his feedback. Return them on lines starting with "RULE:" — these will be saved automatically. Only extract rules that represent lasting preferences (e.g., "Desiree's emails are always important"), not one-time dismissals (use the dismiss tool for those instead).
-"""
+    system_prompt = _build_system_prompt()
 
     try:
         client = _get_claude()
@@ -424,31 +458,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_text += f" {caption}"
         user_text += f"\n\nFile contents:\n{file_content}"
 
-        # Process through Claude directly (same logic as handle_message)
+        # Process through Claude directly
         log_feedback("document", f"{doc.file_name}: {file_content[:500]}")
 
-        prefs = load_preferences()
-        rules_text = "\n".join(f"- {r}" for r in prefs.get("rules", [])) or "None yet"
+        doc_extra = """
+Additional instructions for document handling:
+- If the file contains suggestions or preferences, acknowledge them and extract rules.
+- Summarize the key points of the document concisely.
+- If the document relates to an ongoing project or priority, connect it."""
 
-        digest_context = ""
-        if _last_digest:
-            digest_context = f"\nThe most recent digest I sent:\n{_last_digest}\n"
-
-        from memory import get_memories_for_prompt
-        memory_context = get_memories_for_prompt()
-        memory_section = f"\nRecent memory (things you remember from past interactions):\n{memory_context}\n" if memory_context else ""
-
-        system_prompt = f"""You are Claudette, a proactive personal assistant for a behavioral science researcher named Erez.
-You communicate via Telegram.
-
-Current learned preferences:
-{rules_text}
-{digest_context}{memory_section}
-Instructions:
-- Respond warmly and concisely (this is Telegram, not email)
-- If the file contains suggestions or preferences, acknowledge them and extract rules
-- Extract any preference rules. Return them on lines starting with "RULE:" — these will be saved automatically. Only extract rules that represent lasting preferences.
-"""
+        system_prompt = _build_system_prompt(extra_instructions=doc_extra)
 
         client = _get_claude()
         response = client.messages.create(

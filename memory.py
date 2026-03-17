@@ -53,17 +53,24 @@ Type guidelines:
 - "fact": a concrete fact about Erez's schedule, plans, or situation
 - "preference": a lasting preference about how Erez wants things handled
 
+<already_handled>
+{already_handled}
+</already_handled>
+
+CRITICAL: Do NOT create "pending" memories for items listed in <already_handled>. Creating pending items for resolved issues will cause the digest to re-flag them, which may confuse Erez into re-doing work he's already completed. If something appears in the handled list, it is DONE — record it as "resolved" if needed, never as "pending".
+
+<format>
 Rules:
 - Only extract genuinely useful information. Skip pleasantries and small talk.
 - If nothing worth remembering happened, return an empty array [].
 - Each memory must be self-contained — understandable without the original context.
 - Keep each "content" field to ONE sentence.
-- IMPORTANT: Do NOT create "pending" memories for items that appear in the ALREADY HANDLED list below. These have been explicitly dismissed or resolved by the user.
-{already_handled}
-Return ONLY valid JSON. No explanation text.
+- Return ONLY valid JSON. No explanation text.
+</format>
 
-Interaction ({source}):
-{conversation_text}"""
+<interaction source="{source}">
+{conversation_text}
+</interaction>"""
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +274,8 @@ def _get_handled_context() -> str:
         pass
 
     if not lines:
-        return ""
-    return "\nALREADY HANDLED (do not create pending items for these):\n" + "\n".join(lines) + "\n"
+        return "No previously handled items."
+    return "\n".join(lines)
 
 
 def extract_memories(conversation_text: str, source: str = "bot") -> list[dict]:
