@@ -135,6 +135,8 @@ def _dismiss_email(query: str, reason: str) -> str:
     if not messages:
         return f"No emails found matching '{query}'. Could not dismiss."
 
+    import email.utils
+
     msg = service.users().messages().get(
         userId="me", id=messages[0]["id"], format="metadata",
         metadataHeaders=["Subject", "From"],
@@ -143,8 +145,6 @@ def _dismiss_email(query: str, reason: str) -> str:
     headers = msg.get("payload", {}).get("headers", [])
     subject = next((h["value"] for h in headers if h["name"].lower() == "subject"), "")
     from_header = next((h["value"] for h in headers if h["name"].lower() == "from"), "")
-    # Extract email address from "Name <email>" format
-    import email.utils
     _, sender_email = email.utils.parseaddr(from_header)
 
     dismiss_thread(thread_id, subject=subject, reason=reason, sender_email=sender_email)
