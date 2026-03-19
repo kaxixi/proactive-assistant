@@ -24,6 +24,7 @@ MEMORY_FILE = os.path.join(PROJECT_DIR, "memory.json")
 EXPIRY_DAYS = {
     "resolved": 14,
     "pending": 30,
+    "follow_up": None,  # no expiry — stays until explicitly resolved
     "relationship": None,  # no expiry
     "fact": 60,
     "preference": None,  # no expiry
@@ -42,16 +43,17 @@ EXTRACTION_PROMPT = """You are a memory extraction system for a personal assista
 Analyze the following interaction and extract key memories worth retaining.
 
 For each memory, return a JSON array of objects with these fields:
-- "type": one of "resolved", "pending", "relationship", "fact", "preference"
+- "type": one of "resolved", "pending", "follow_up", "relationship", "fact", "preference"
 - "content": a concise, self-contained statement (one sentence)
 - "tags": array of relevant tags (person names as "person:Name", or general tags like "email", "meeting", "travel", "deadline")
 
 Type guidelines:
 - "resolved": something completed, handled, or no longer needs attention
-- "pending": a task, follow-up, or open item Erez still needs to act on
+- "pending": a task or open item Erez still needs to act on (auto-expires after 30 days)
+- "follow_up": something Erez explicitly asked to be reminded about until he says it's done. Use this when Erez says "keep reminding me", "don't let me forget", or "remind me again". These NEVER auto-expire — they stay active until Erez says it's resolved.
 - "relationship": information about a person and their role/relationship to Erez
 - "fact": a concrete fact about Erez's schedule, plans, or situation
-- "preference": a lasting preference about how Erez wants things handled
+- "preference": a lasting preference about how Erez wants things handled (permanent rules, not temporary tasks)
 
 <already_handled>
 {already_handled}
@@ -193,6 +195,7 @@ def get_memories_for_prompt(max_chars: int = 2000) -> str:
         return ""
 
     # Partition individual memories
+    follow_ups = [m for m in active if m["type"] == "follow_up"]
     pending = [m for m in active if m["type"] == "pending"]
     relationships = [m for m in active if m["type"] == "relationship"]
     preferences = [m for m in active if m["type"] == "preference"]
@@ -205,10 +208,10 @@ def get_memories_for_prompt(max_chars: int = 2000) -> str:
     sections = []
     used = 0
 
-    # Tier 1 (~40%): pending, relationships, preferences — must-include
+    # Tier 1 (~40%): follow_ups, pending, relationships, preferences — must-include
     tier1_budget = int(max_chars * 0.4)
     tier1_lines = []
-    for m in pending + relationships + preferences:
+    for m in follow_ups + pending + relationships + preferences:
         line = f"- [{m['type']}] {m['content']}"
         if used + len(line) + 1 <= tier1_budget:
             tier1_lines.append(line)

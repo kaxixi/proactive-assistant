@@ -223,7 +223,8 @@ Instructions:
 - If he's asking a question, answer it directly.
 - If he's asking you to find a file or look something up, use the search tools.
 - Use your memory context to maintain continuity — reference past conversations naturally, avoid re-asking about things you already know.
-- Extract any LASTING preference rules from his feedback. Return them on lines starting with "RULE:" — these will be saved automatically. Only extract rules that represent lasting preferences (e.g., "Desiree's emails are always important"), not one-time dismissals (use the dismiss tool for those instead).
+- Extract LASTING preference rules from his feedback. Return them on lines starting with "RULE:" — these will be saved automatically.
+  IMPORTANT: Only create rules for truly PERMANENT preferences (e.g., "Desiree's emails are always important", "Skip all Vercel notifications"). Do NOT create rules for temporary situations like "remind me to reply to Tim" — those are follow_up memories, not rules. The memory extraction system handles follow_ups automatically.
 {extra_instructions}"""
 
     return system_prompt
