@@ -3,6 +3,7 @@ credentials.json
 token.json
 preferences.json
 memory.json
+open_loops.json
 __pycache__/
 *.pyc
 venv/

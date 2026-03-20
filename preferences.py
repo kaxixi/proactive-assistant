@@ -11,11 +11,7 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 PREFS_FILE = os.path.join(PROJECT_DIR, "preferences.json")
 
 DEFAULT_PREFS = {
-    "rules": [],
-    "senders_always_flag": [],
-    "senders_never_flag": [],
     "dismissed_threads": [],
-    "feedback_log": [],
 }
 
 
@@ -30,28 +26,6 @@ def save_preferences(prefs: dict):
     with open(PREFS_FILE, "w") as f:
         json.dump(prefs, f, indent=2, default=str)
 
-
-def add_rule(rule: str):
-    """Add a learned preference rule."""
-    prefs = load_preferences()
-    if rule not in prefs["rules"]:
-        prefs["rules"].append(rule)
-        save_preferences(prefs)
-        logger.info(f"Added preference rule: {rule}")
-
-
-def add_sender_always_flag(email: str):
-    prefs = load_preferences()
-    if email not in prefs["senders_always_flag"]:
-        prefs["senders_always_flag"].append(email)
-        save_preferences(prefs)
-
-
-def add_sender_never_flag(email: str):
-    prefs = load_preferences()
-    if email not in prefs["senders_never_flag"]:
-        prefs["senders_never_flag"].append(email)
-        save_preferences(prefs)
 
 
 def dismiss_thread(thread_id: str, subject: str = "", reason: str = "", sender_email: str = ""):
@@ -95,31 +69,36 @@ def get_dismissed_thread_ids() -> set:
 
 
 def get_dismissed_context() -> str:
-    """Return dismissed threads as text for the digest prompt, so Claude can judge
+    """Return dismissed threads and loops as text for the digest prompt, so Claude can judge
     whether new emails from the same sender/topic are truly new or duplicates."""
+    now = datetime.now(timezone.utc)
+    lines = []
+
+    # Legacy dismissed threads from preferences.json
     prefs = load_preferences()
     dismissed = prefs.get("dismissed_threads", [])
-    now = datetime.now(timezone.utc)
-    active = []
     for d in dismissed:
         dismissed_at = datetime.fromisoformat(d["dismissed_at"])
         if (now - dismissed_at).days < 30:
-            active.append(d)
-    if not active:
-        return ""
-    lines = []
-    for d in active:
-        days_ago = (now - datetime.fromisoformat(d["dismissed_at"])).days
-        lines.append(f"- [thread:{d.get('thread_id', '?')}] \"{d.get('subject', 'unknown')}\" — dismissed {days_ago}d ago (reason: {d.get('reason', 'handled')})")
-    return "\n".join(lines)
+            days_ago = (now - dismissed_at).days
+            lines.append(f"- [thread:{d.get('thread_id', '?')}] \"{d.get('subject', 'unknown')}\" — dismissed {days_ago}d ago (reason: {d.get('reason', 'handled')})")
+
+    # Dismissed loops from open_loops.json
+    try:
+        from open_loops import load_loops
+        for loop in load_loops():
+            if loop.status != "dismissed" or not loop.dismissed_at:
+                continue
+            dismissed_at = datetime.fromisoformat(loop.dismissed_at)
+            if (now - dismissed_at).days < 30:
+                days_ago = (now - dismissed_at).days
+                lines.append(
+                    f"- [loop:{loop.loop_id}] \"{loop.title}\" ({len(loop.thread_ids)} threads) "
+                    f"— dismissed {days_ago}d ago (reason: {loop.dismiss_reason or 'handled'})"
+                )
+    except Exception:
+        pass  # open_loops.json may not exist yet
+
+    return "\n".join(lines) if lines else ""
 
 
-def log_feedback(feedback_type: str, detail: str):
-    """Log user feedback for future analysis."""
-    prefs = load_preferences()
-    prefs["feedback_log"].append({
-        "type": feedback_type,
-        "detail": detail,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
-    save_preferences(prefs)

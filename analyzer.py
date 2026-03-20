@@ -3,7 +3,7 @@
 import logging
 import anthropic
 
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, ENABLE_EMAIL
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +25,13 @@ Personality: Warm but concise. You write for Telegram — short paragraphs, ligh
 - Highlight ONE-TIME (non-recurring) meetings with extra emphasis — Erez is more likely to miss these.
 - For meetings that need prep, offer to help (e.g., "Want me to look anything up?").
 
-## Email rules
-- Suggest a specific action for every email you mention (reply, follow up, archive, ignore).
-- Weekday digests: 5-10 actionable email items max, grouped by priority.
-- Weekend digests: 3-5 items max, framed as "if you have time."
-- Week-ahead digests: focus on items with upcoming deadlines or that have been sitting too long.
+## Open loop rules
+- Each open loop represents a topic needing attention. A loop may contain multiple email threads from different senders about the same topic.
+- Suggest a specific action for every loop you mention (reply, follow up, archive, ignore).
+- Weekday digests: 5-10 open loops max, grouped by priority.
+- Weekend digests: 3-5 loops max, framed as "if you have time."
+- Week-ahead digests: focus on loops with upcoming deadlines or that have been sitting too long.
+- Reference loops by their title, not individual thread IDs.
 
 ## Priority cross-referencing
 - If Erez's priorities list is available, cross-reference emails and meetings against it.
@@ -40,11 +42,21 @@ Personality: Warm but concise. You write for Telegram — short paragraphs, ligh
 - FOLLOW-UP items in memory are things Erez explicitly asked to be reminded about. Always surface these prominently — they persist until he says they're done.
 - Use historical context (weekly/monthly summaries) to understand longer-term patterns.
 
-## Dismissed email handling
+## Follow-up and person-level tracking
+- Emails annotated with `[FOLLOW-UP REMINDER: ...]` have an active follow-up in memory — surface these prominently with the reminder context.
+- A "FOLLOW-UP REMINDERS (no email thread)" section may appear after loops — these are commitments made outside email (e.g., WhatsApp). Include them in the digest naturally.
+
+## Learned patterns
+- Your <preferences> section contains patterns learned from past interactions.
+- When you apply a learned pattern to deprioritize or highlight a loop, briefly note it
+  the first time: "Deprioritizing this recruiting loop (you usually skip these) — correct
+  me if I'm wrong."
+- This lets Erez confirm or correct your judgment in real time.
+
+## Dismissed loop handling
 Re-flagging handled items may confuse Erez. He has a busy schedule and may not remember he already dealt with something — he might accidentally re-send an email or re-do work. When in doubt, skip it.
-- If an email has a [DISMISSED] tag or matches a dismissed sender/topic, skip it unless there is clearly a NEW issue (new subject, new request).
-- If the sender matches but the topic is obviously different, you may include it with a note.
-- FUZZY CASES: If you see an email tagged [NOTE: sender was recently dismissed] and the topic looks related to the dismissed thread, DO NOT flag it as an action item. Instead, mention it briefly at the end of the digest like: "I also see another thread from [sender] about [topic] — looks related to what you already handled. Want me to dismiss this one too?" This lets Erez confirm rather than re-doing work.
+- Dismissed loops have already been filtered out in pre-processing.
+- If the <dismissed_threads> section mentions recently dismissed topics, and you see a loop that looks related, do NOT flag it as an action item. Instead, mention it briefly: "I also see a loop about [topic] — looks related to what you already handled. Want me to dismiss it?"
 
 ## Example weekday digest
 
@@ -59,16 +71,16 @@ Here is an example of the desired tone, structure, and format:
 • 9:00 AM — Faculty seminar (recurring)
 • 3:30 PM — ⚡ ONE-TIME: Coffee with visiting speaker Dr. Liu
 
-📬 Emails needing attention:
+📬 Open loops needing attention:
 
 🔴 High priority:
-• Arjun's LOR request (4 days, unreplied) — connects to your "Arjun LOR" priority. Suggest: draft a reply this morning.
-• Department chair re: curriculum committee (3 days) — Suggest: quick reply confirming attendance.
+• Arjun's HCRP application (3 threads, 9 days) — connects to your "Arjun LOR" priority. Includes emails from Arjun and CommunityForce. Suggest: reply to Arjun this morning, the rest will resolve.
+• Department chair re: curriculum committee (1 thread, 3 days) — Suggest: quick reply confirming attendance.
 
 🟡 Medium:
-• Conference submission confirmation from SPSP (6 days) — Suggest: archive, no action needed.
+• SPSP conference logistics (2 threads, 6 days) — submission confirmation + hotel block. Suggest: archive the confirmation, book hotel if needed.
 
-All other items look handled. Have a good Tuesday! ☕
+All other loops look handled. Have a good Tuesday! ☕
 ---
 """
 
@@ -95,7 +107,7 @@ def generate_daily_digest(
     sections = []
 
     sections.append(f"<calendar>\n{calendar_xml}\n</calendar>")
-    sections.append(f"<emails>\n{emails_xml}\n</emails>")
+    sections.append(f"<open_loops>\n{emails_xml}\n</open_loops>")
 
     if priorities_xml:
         sections.append(f"<priorities>\n{priorities_xml}\n</priorities>")
@@ -111,39 +123,67 @@ def generate_daily_digest(
     if overflow_note:
         data_block += f"\n\n<note>{overflow_note}</note>"
 
-    # Task-specific instructions
-    task_instructions = {
-        "weekday": """<task>
+    # Task-specific instructions — vary by digest type and whether email is enabled
+    if ENABLE_EMAIL:
+        task_instructions = {
+            "weekday": """<task>
 Generate a concise, friendly weekday morning digest.
 - List ALL calendar events for today and tomorrow — every single one.
 - ONE-TIME meetings should be highlighted with extra emphasis.
-- Keep it focused — aim for 5-10 actionable email items max, grouped by priority.
+- Keep it focused — aim for 5-10 open loops max, grouped by priority.
 - If there's nothing urgent, say so briefly and positively.
 </task>""",
-        "weekend": """<task>
+            "weekend": """<task>
 Generate a relaxed weekend morning digest.
 - Show what's on the calendar for the weekend.
-- For emails, focus on items that didn't get done during the week — frame them as "if you have time this weekend" rather than urgent.
+- For open loops, focus on items that didn't get done during the week — frame them as "if you have time this weekend" rather than urgent.
 - Keep the tone relaxed — it's the weekend.
 - Don't push too many action items — pick the top 3-5 that would make Monday easier if handled.
 </task>""",
-        "week_ahead": """<task>
+            "week_ahead": """<task>
 Generate a week-ahead planning digest for the coming week (Monday through Friday).
 - For calendar: highlight ONE-TIME (non-recurring) meetings specifically — say things like "In addition to your usual recurring meetings, you have a one-time meeting with X on Tuesday, Y on Thursday."
 - For recurring meetings, you can summarize them briefly ("your usual Monday/Wednesday meetings") rather than listing each one.
-- For emails: focus on items with upcoming deadlines this week, and anything that's been sitting too long.
+- For open loops: focus on items with upcoming deadlines this week, and anything that's been sitting too long.
 - Cross-reference priorities: if a priority item has a deadline this week, call it out explicitly.
 - Set the tone for the week — help Erez feel organized and on top of things.
 - Keep it focused — this is a planning overview, not a detailed daily breakdown.
 </task>""",
-    }
-
-    self_check = """<self_check>
+        }
+        self_check = """<self_check>
 Before finalizing, verify:
 1. Every calendar event from the <calendar> section is included in your response.
-2. No emails match dismissed senders/topics from <dismissed_threads> (skip those).
-3. Every email you mention has a specific action suggestion.
+2. No loops match dismissed topics from <dismissed_threads> (skip those).
+3. Every loop you mention has a specific action suggestion.
 4. Response is under 400 words.
+</self_check>"""
+    else:
+        task_instructions = {
+            "weekday": """<task>
+Generate a concise, friendly weekday morning calendar digest.
+- List ALL calendar events for today and tomorrow — every single one.
+- ONE-TIME meetings should be highlighted with extra emphasis.
+- For meetings that need prep, offer to help.
+- If there's nothing unusual, say so briefly and positively.
+</task>""",
+            "weekend": """<task>
+Generate a relaxed weekend morning calendar digest.
+- Show what's on the calendar for the weekend.
+- Keep the tone relaxed — it's the weekend.
+</task>""",
+            "week_ahead": """<task>
+Generate a week-ahead calendar planning digest for the coming week (Monday through Friday).
+- Highlight ONE-TIME (non-recurring) meetings specifically — say things like "In addition to your usual recurring meetings, you have a one-time meeting with X on Tuesday, Y on Thursday."
+- For recurring meetings, you can summarize them briefly ("your usual Monday/Wednesday meetings") rather than listing each one.
+- Cross-reference priorities if available.
+- Set the tone for the week — help Erez feel organized and on top of things.
+- Keep it focused — this is a planning overview, not a detailed daily breakdown.
+</task>""",
+        }
+        self_check = """<self_check>
+Before finalizing, verify:
+1. Every calendar event from the <calendar> section is included in your response.
+2. Response is under 300 words.
 </self_check>"""
 
     user_message = f"""{data_block}

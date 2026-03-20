@@ -1,23 +1,34 @@
 """Entry point for scheduled daily runs and manual triggers."""
 
 import asyncio
+import json
 import logging
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from email_monitor import scan_inbox, FlaggedEmail
 from calendar_digest import get_upcoming_meetings, get_meetings_for_range, get_user_timezone, Meeting
 from analyzer import generate_daily_digest
+import anthropic
+
 from preferences import load_preferences, get_dismissed_context, get_dismissed_thread_ids
 from priorities import fetch_priorities
 from memory import (
     get_memories_for_prompt, extract_and_store, compact_memories,
     generate_memory_review, mark_review_done,
+    get_active_memories, migrate_rules_to_memories,
 )
 from bot import send_message
-from config import DIGEST_HOUR, DIGEST_MINUTE
+from config import DIGEST_HOUR, DIGEST_MINUTE, ENABLE_EMAIL, ANTHROPIC_API_KEY, CLAUDE_MODEL
+from open_loops import (
+    OpenLoop, get_open_loops, get_loop_thread_ids, upsert_loops,
+)
+
+if ENABLE_EMAIL:
+    from email_monitor import scan_inbox, FlaggedEmail
+else:
+    FlaggedEmail = None  # type reference only
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -25,8 +36,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Maximum emails to pass to Claude after pre-processing
-MAX_EMAILS = 25
+# Maximum loops to pass to Claude after pre-processing
+MAX_LOOPS = 15
 
 
 def _get_digest_type_and_calendar(local_now: datetime) -> tuple[str, list]:
@@ -51,93 +62,272 @@ def _get_digest_type_and_calendar(local_now: datetime) -> tuple[str, list]:
 # ---------------------------------------------------------------------------
 
 def _hard_filter_dismissed(emails: list[FlaggedEmail]) -> list[FlaggedEmail]:
-    """Remove emails whose thread_id exactly matches a dismissed thread."""
+    """Remove emails whose thread_id matches a dismissed thread or dismissed loop."""
     dismissed_ids = get_dismissed_thread_ids()
-    if not dismissed_ids:
+    # Also include thread IDs from dismissed loops
+    loop_dismissed_ids = get_loop_thread_ids(status="dismissed")
+    all_dismissed = dismissed_ids | loop_dismissed_ids
+    if not all_dismissed:
         return emails
     before = len(emails)
-    filtered = [e for e in emails if e.thread_id not in dismissed_ids]
+    filtered = [e for e in emails if e.thread_id not in all_dismissed]
     removed = before - len(filtered)
     if removed:
-        logger.info(f"Pre-processing: hard-filtered {removed} dismissed thread(s)")
+        logger.info(f"Pre-processing: hard-filtered {removed} dismissed thread(s) (legacy: {len(dismissed_ids)}, loops: {len(loop_dismissed_ids)})")
     return filtered
 
 
-def _get_dismissed_senders(prefs: dict) -> dict[str, str]:
-    """Extract sender email → reason mapping from dismissed threads.
 
-    We look at the sender field stored on the dismissed thread entries.
-    Since dismissed threads store subject and reason but not sender email directly,
-    we build a mapping from the dismissed_threads list. The dismiss_email function
-    in bot.py stores the subject — we'll also check thread data if available.
+def _extract_tagged_memories(mem_type: str) -> list[dict]:
+    """Extract active memories of given type that have person: or topic: tags.
+
+    Returns list of dicts with keys: content, tag_type ("person" or "topic"),
+    value (lowercase), created_at.  A single memory may produce multiple entries
+    if it has both person and topic tags.
     """
-    dismissed = prefs.get("dismissed_threads", [])
-    sender_reasons = {}
-    for d in dismissed:
-        # If a sender_email was stored, use it directly
-        sender = d.get("sender_email", "")
-        if sender:
-            sender_reasons[sender.lower()] = d.get("reason", "handled")
-        # Also extract from subject line patterns like "from: user@example.com"
-        subject = d.get("subject", "")
-        # Look for email-like patterns in the subject
-        email_match = re.findall(r'[\w.+-]+@[\w.-]+\.\w+', subject)
-        for em in email_match:
-            sender_reasons[em.lower()] = d.get("reason", "handled")
-    return sender_reasons
+    active = get_active_memories()
+    results = []
+    for m in active:
+        if m["type"] != mem_type:
+            continue
+        for tag in m.get("tags", []):
+            for prefix in ("person:", "topic:"):
+                if tag.startswith(prefix):
+                    value = tag[len(prefix):].strip()
+                    if value:
+                        results.append({
+                            "content": m["content"],
+                            "tag_type": prefix.rstrip(":"),
+                            "value": value.lower(),
+                            "created_at": m["created_at"],
+                        })
+    return results
 
 
-def _fuzzy_dismiss_tag(emails: list[FlaggedEmail], prefs: dict) -> list[FlaggedEmail]:
-    """Tag emails whose sender matches a dismissed thread's sender."""
-    dismissed_senders = _get_dismissed_senders(prefs)
-    if not dismissed_senders:
-        return emails
+def _substring_match(needle: str, haystack: str) -> bool:
+    """Substring match with short-string protection.
 
-    tagged_count = 0
-    for email in emails:
-        sender_lower = email.sender.lower()
-        if sender_lower in dismissed_senders:
-            reason = dismissed_senders[sender_lower]
-            email.snippet = f"[NOTE: sender was recently dismissed for: '{reason}'] {email.snippet}"
-            tagged_count += 1
-
-    if tagged_count:
-        logger.info(f"Pre-processing: fuzzy-dismiss tagged {tagged_count} email(s)")
-    return emails
+    Needles under 4 chars require exact word-boundary match to avoid false
+    positives (e.g. "Li" matching "Application").
+    """
+    if len(needle) < 4:
+        tokens = re.findall(r'\b\w+\b', haystack)
+        return needle in tokens
+    return needle in haystack
 
 
-def _cap_emails(emails: list[FlaggedEmail]) -> tuple[list[FlaggedEmail], str]:
-    """Sort by urgency (high first) and cap at MAX_EMAILS. Return overflow note."""
+
+def _tag_matches_text(value: str, text: str) -> bool:
+    """Check if a tagged memory value appears in a formatted text line."""
+    return _substring_match(value, text.lower())
+
+
+
+
+def _group_into_loops(emails: list[FlaggedEmail]) -> list[OpenLoop]:
+    """Call Claude to group flagged emails into topic-level open loops.
+
+    Merges with existing loops from open_loops.json so new emails can
+    join existing loops.
+    """
+    if not emails:
+        return get_open_loops()
+
+    existing_loops = get_open_loops()
+
+    # Build the prompt
+    email_lines = []
+    for e in emails:
+        email_lines.append(
+            f"- thread_id: {e.thread_id}, subject: {e.subject}, "
+            f"sender: {e.sender_name} <{e.sender}>, age_days: {e.age_days}, "
+            f"urgency: {e.urgency}, reason: {e.reason}, snippet: {e.snippet}"
+        )
+
+    existing_loop_lines = []
+    for l in existing_loops:
+        existing_loop_lines.append(
+            f"- loop_id: {l.loop_id}, title: {l.title}, "
+            f"thread_ids: {l.thread_ids}, senders: {l.senders}, "
+            f"tags: {l.tags}"
+        )
+
+    # Gather learned context: resolved memories, preferences, and follow-ups
+    resolved = _extract_tagged_memories("resolved")
+    follow_ups = _extract_tagged_memories("follow_up")
+    from memory import get_preference_memories
+    pref_memories = get_preference_memories()
+
+    context_lines = []
+    if resolved:
+        context_lines.append("Recently resolved (deprioritize related emails):")
+        for r in resolved:
+            context_lines.append(f"  - [{r['tag_type']}:{r['value']}] {r['content']}")
+    if follow_ups:
+        context_lines.append("Active follow-ups (flag these as higher priority):")
+        for fu in follow_ups:
+            context_lines.append(f"  - [{fu['tag_type']}:{fu['value']}] {fu['content']}")
+    if pref_memories:
+        context_lines.append("Learned preferences:")
+        for pm in pref_memories:
+            context_lines.append(f"  - {pm['content']}")
+
+    memory_block = "\n".join(context_lines) if context_lines else "None"
+
+    prompt = f"""You are grouping emails into topic-level "open loops". An open loop is a topic or concern that may span multiple email threads (e.g., "Arjun's HCRP application" groups emails from both Arjun and CommunityForce about the same application).
+
+<emails>
+{chr(10).join(email_lines)}
+</emails>
+
+<existing_loops>
+{chr(10).join(existing_loop_lines) if existing_loop_lines else "None"}
+</existing_loops>
+
+<learned_context>
+{memory_block}
+</learned_context>
+
+Instructions:
+1. Assign each email to an existing loop OR create a new loop.
+2. Use judgment: emails about the same topic from different senders belong in the same loop.
+3. Each loop needs a short, descriptive title and 1-2 sentence summary.
+4. Generate person: and topic: tags for each loop.
+5. Keep loop titles stable — if an email fits an existing loop, use that loop's ID.
+6. Use the learned context to set urgency:
+   - Emails matching resolved items → set urgency to "low"
+   - Emails matching active follow-ups → set urgency to "high"
+   - Apply learned preferences (e.g., "skip recruiting emails" → urgency "low")
+
+Return ONLY valid JSON (no markdown fences) with this structure:
+{{
+  "loops": [
+    {{
+      "loop_id": "existing_id_or_NEW",
+      "title": "Short descriptive title",
+      "summary": "1-2 sentence summary of what this loop is about",
+      "thread_ids": ["id1", "id2"],
+      "senders": ["email1@example.com"],
+      "tags": ["person:Arjun", "topic:hcrp"],
+      "urgency": "high/medium/low"
+    }}
+  ]
+}}
+
+For new loops, set loop_id to "NEW". For existing loops, use their existing loop_id."""
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        # Fix common JSON issues: trailing commas before ] or }
+        raw = re.sub(r',\s*([}\]])', r'\1', raw)
+        # If response was truncated, try to salvage by closing open structures
+        if not raw.endswith('}'):
+            # Find last complete loop entry
+            last_brace = raw.rfind('}')
+            if last_brace > 0:
+                raw = raw[:last_brace + 1] + ']}'
+        result = json.loads(raw)
+    except Exception as e:
+        logger.error(f"Loop grouping Claude call failed: {e}")
+        # Fallback: one loop per email
+        return _fallback_loops(emails)
+
+    # Build email lookup for derived fields
+    email_by_thread = {e.thread_id: e for e in emails}
     urgency_order = {"high": 0, "medium": 1, "low": 2}
-    emails.sort(key=lambda e: (urgency_order.get(e.urgency, 2), -e.age_days))
 
-    overflow_note = ""
-    if len(emails) > MAX_EMAILS:
-        overflow_note = f"Plus {len(emails) - MAX_EMAILS} lower-priority items not shown."
-        emails = emails[:MAX_EMAILS]
-        logger.info(f"Pre-processing: capped emails to {MAX_EMAILS}, {overflow_note}")
+    from open_loops import _new_id, _now_iso
 
-    return emails, overflow_note
+    new_loops = []
+    for loop_data in result.get("loops", []):
+        loop_id = loop_data.get("loop_id", "NEW")
+        if loop_id == "NEW":
+            loop_id = _new_id()
+
+        thread_ids = loop_data.get("thread_ids", [])
+        senders = loop_data.get("senders", [])
+
+        # Compute derived fields from member emails
+        member_emails = [email_by_thread[tid] for tid in thread_ids if tid in email_by_thread]
+        if member_emails:
+            email_urgency = min(member_emails, key=lambda e: urgency_order.get(e.urgency, 2)).urgency
+            max_age = max(e.age_days for e in member_emails)
+            reasons = set(e.reason for e in member_emails)
+            reason = "mixed" if len(reasons) > 1 else reasons.pop()
+            snippets = [e.snippet for e in member_emails[:3]]
+        else:
+            email_urgency = "low"
+            max_age = 0
+            reason = "unreplied"
+            snippets = []
+
+        # Use Claude's urgency if provided (informed by learned context),
+        # otherwise fall back to max email urgency
+        claude_urgency = loop_data.get("urgency")
+        loop_urgency = claude_urgency if claude_urgency in urgency_order else email_urgency
+
+        new_loops.append(OpenLoop(
+            loop_id=loop_id,
+            title=loop_data.get("title", "Untitled"),
+            summary=loop_data.get("summary", ""),
+            thread_ids=thread_ids,
+            senders=senders,
+            urgency=loop_urgency,
+            age_days=max_age,
+            reason=reason,
+            snippets=snippets,
+            tags=loop_data.get("tags", []),
+        ))
+
+    upsert_loops(new_loops)
+    logger.info(f"Grouped {len(emails)} emails into {len(new_loops)} loops")
+    return get_open_loops()
 
 
-def _priority_match(emails: list[FlaggedEmail], priorities: str) -> list[FlaggedEmail]:
-    """Tag emails that match keywords from the priorities list."""
+def _fallback_loops(emails: list[FlaggedEmail]) -> list[OpenLoop]:
+    """Fallback: create one loop per email if Claude grouping fails."""
+    from open_loops import _new_id
+    loops = []
+    for e in emails:
+        loops.append(OpenLoop(
+            loop_id=_new_id(),
+            title=e.subject,
+            summary=f"From {e.sender_name}: {e.snippet[:100]}",
+            thread_ids=[e.thread_id],
+            senders=[e.sender],
+            urgency=e.urgency,
+            age_days=e.age_days,
+            reason=e.reason,
+            snippets=[e.snippet],
+            tags=[f"person:{e.sender_name}"],
+        ))
+    upsert_loops(loops)
+    return get_open_loops()
+
+
+def _priority_match_loops(loops: list[OpenLoop], priorities: str) -> list[OpenLoop]:
+    """Tag loops that match keywords from the priorities list."""
     if not priorities:
-        return emails
+        return loops
 
-    # Extract meaningful keywords/phrases from priorities (lines with content)
     priority_lines = [
         line.strip() for line in priorities.splitlines()
         if line.strip() and len(line.strip()) > 3
     ]
 
-    # Build keyword list: use each priority line as a potential match
-    # Also extract individual significant words (4+ chars)
     keywords = []
     for line in priority_lines:
         keywords.append(line.lower())
         for word in re.findall(r'\b[a-zA-Z]{4,}\b', line):
-            # Skip very common words
             if word.lower() not in {
                 "with", "from", "that", "this", "have", "will", "been",
                 "more", "about", "would", "their", "there", "which", "could",
@@ -148,7 +338,6 @@ def _priority_match(emails: list[FlaggedEmail], priorities: str) -> list[Flagged
             }:
                 keywords.append(word.lower())
 
-    # Deduplicate while preserving order (longer phrases first)
     seen = set()
     unique_keywords = []
     for kw in keywords:
@@ -157,44 +346,109 @@ def _priority_match(emails: list[FlaggedEmail], priorities: str) -> list[Flagged
             unique_keywords.append(kw)
 
     matched_count = 0
-    for email in emails:
-        search_text = f"{email.subject} {email.sender_name} {email.sender}".lower()
-        matches = []
-        for kw in unique_keywords:
-            if kw in search_text:
-                matches.append(kw)
+    for loop in loops:
+        search_text = f"{loop.title} {' '.join(loop.senders)} {' '.join(loop.tags)}".lower()
+        matches = [kw for kw in unique_keywords if kw in search_text]
         if matches:
-            # Use the longest match as the best priority reference
             best_match = max(matches, key=len)
-            email.snippet = f"[MATCHES PRIORITY: '{best_match}'] {email.snippet}"
+            loop.summary = f"[MATCHES PRIORITY: '{best_match}'] {loop.summary}"
             matched_count += 1
 
     if matched_count:
-        logger.info(f"Pre-processing: matched {matched_count} email(s) to priorities")
-    return emails
+        logger.info(f"Pre-processing: matched {matched_count} loop(s) to priorities")
+    return loops
 
 
-def _group_emails_by_priority(emails: list[FlaggedEmail]) -> str:
-    """Pre-group emails into high/medium/low sections as formatted text."""
+def _cap_loops(loops: list[OpenLoop]) -> tuple[list[OpenLoop], str]:
+    """Sort by urgency and cap at MAX_LOOPS."""
+    urgency_order = {"high": 0, "medium": 1, "low": 2}
+    loops.sort(key=lambda l: (urgency_order.get(l.urgency, 2), -l.age_days))
+
+    overflow_note = ""
+    if len(loops) > MAX_LOOPS:
+        overflow_note = f"Plus {len(loops) - MAX_LOOPS} lower-priority loops not shown."
+        loops = loops[:MAX_LOOPS]
+        logger.info(f"Pre-processing: capped loops to {MAX_LOOPS}, {overflow_note}")
+
+    return loops, overflow_note
+
+
+def _group_loops_by_priority(loops: list[OpenLoop]) -> str:
+    """Format loops into high/medium/low sections as text."""
     groups = {"high": [], "medium": [], "low": []}
-    for e in emails:
-        groups.get(e.urgency, groups["low"]).append(e)
+    for l in loops:
+        groups.get(l.urgency, groups["low"]).append(l)
 
     lines = []
     for level, label in [("high", "HIGH PRIORITY"), ("medium", "MEDIUM PRIORITY"), ("low", "LOW PRIORITY")]:
         group = groups[level]
         if not group:
             continue
-        lines.append(f"--- {label} ({len(group)} items) ---")
-        for e in group:
+        lines.append(f"--- {label} ({len(group)} loop{'s' if len(group) != 1 else ''}) ---")
+        for l in group:
+            sender_list = ", ".join(l.senders[:3])
             lines.append(
-                f"- [thread:{e.thread_id}] Subject: {e.subject}, From: {e.sender_name} <{e.sender}>, "
-                f"Age: {e.age_days} days, Reason: {e.reason}, Urgency: {e.urgency}, "
-                f"Snippet: {e.snippet}"
+                f"- [loop:{l.loop_id}] \"{l.title}\" — {len(l.thread_ids)} thread(s) "
+                f"({sender_list}), oldest {l.age_days} days, reason: {l.reason}"
             )
+            if l.summary:
+                lines.append(f"  Summary: {l.summary}")
+            if l.snippets:
+                lines.append(f"  Latest: {l.snippets[0][:200]}")
+            lines.append(f"  Tags: {', '.join(l.tags)}")
         lines.append("")
 
     return "\n".join(lines) if lines else "None — inbox looks clean."
+
+
+def _apply_follow_up_to_loops(loops: list[OpenLoop], loops_xml: str) -> str:
+    """Annotate loops with follow-up reminders and inject synthetic lines for non-loop follow-ups."""
+    follow_ups = _extract_tagged_memories("follow_up")
+    if not follow_ups:
+        return loops_xml
+
+    matched = set()
+    unmatched = []
+
+    for fu in follow_ups:
+        found = False
+        for loop in loops:
+            # Check if follow-up matches any loop by tags or title
+            loop_text = f"{loop.title} {' '.join(loop.senders)} {' '.join(loop.tags)}".lower()
+            if _tag_matches_text(fu["value"], loop_text):
+                found = True
+                matched.add((fu["tag_type"], fu["value"], fu["content"]))
+                break
+        if not found:
+            unmatched.append(fu)
+
+    updated_xml = loops_xml
+    for tag_type, value, content in matched:
+        lines = updated_xml.split("\n")
+        for i, line in enumerate(lines):
+            if _tag_matches_text(value, line):
+                if "[FOLLOW-UP REMINDER:" not in line:
+                    lines[i] = line + f" [FOLLOW-UP REMINDER: {content}]"
+                    break
+        updated_xml = "\n".join(lines)
+
+    if unmatched:
+        synthetic_lines = ["\n--- FOLLOW-UP REMINDERS (no email thread) ---"]
+        for fu in unmatched:
+            synthetic_lines.append(
+                f"- [FOLLOW-UP — no email thread] {fu['value'].title()}: {fu['content']}"
+            )
+        updated_xml += "\n".join(synthetic_lines)
+
+    annotated = len(matched)
+    injected = len(unmatched)
+    if annotated or injected:
+        logger.info(
+            f"Pre-processing: follow-up logic (loops) — {annotated} annotated, {injected} synthetic injected"
+        )
+
+    return updated_xml
+
 
 
 def _format_calendar(meetings: list[Meeting], local_now: datetime) -> str:
@@ -247,11 +501,12 @@ def _format_calendar(meetings: list[Meeting], local_now: datetime) -> str:
 
 
 def _format_preferences(prefs: dict) -> str:
-    """Format preferences as text for XML tag."""
-    rules = prefs.get("rules", [])
-    if not rules:
+    """Format preferences as text for XML tag, reading from preference memories."""
+    from memory import get_preference_memories
+    pref_memories = get_preference_memories()
+    if not pref_memories:
         return ""
-    return "Learned rules:\n" + "\n".join(f"- {r}" for r in rules)
+    return "Learned preferences:\n" + "\n".join(f"- {m['content']}" for m in pref_memories)
 
 
 def preprocess_for_digest(
@@ -266,27 +521,40 @@ def preprocess_for_digest(
     """Run the full pre-processing pipeline and return formatted strings
     ready to be dropped into analyzer.py XML tags.
 
+    When email is enabled, groups emails into open loops (topic-level tracking).
+
     Returns dict with keys: emails_xml, calendar_xml, priorities_xml,
     preferences_xml, memories_xml, dismissed_xml, overflow_note
     """
     logger.info(f"Pre-processing: starting with {len(flagged_emails)} emails, {len(meetings)} meetings")
 
-    # (a) Hard filter dismissed thread IDs
-    emails = _hard_filter_dismissed(flagged_emails)
+    if ENABLE_EMAIL and flagged_emails:
+        # (a) Hard filter dismissed thread IDs (legacy + loop-dismissed)
+        emails = _hard_filter_dismissed(flagged_emails)
 
-    # (b) Fuzzy dismiss tagging — tag emails from recently dismissed senders
-    emails = _fuzzy_dismiss_tag(emails, prefs)
+        # (b) Group into open loops via Claude
+        logger.info("Grouping emails into open loops...")
+        loops = _group_into_loops(emails)
 
-    # (c) Priority matching — tag emails that match priority keywords
-    emails = _priority_match(emails, priorities)
+        # (c) Priority matching on loops
+        loops = _priority_match_loops(loops, priorities)
 
-    # (d) Cap email count
-    emails, overflow_note = _cap_emails(emails)
+        # (d) Cap loops
+        loops, overflow_note = _cap_loops(loops)
 
-    # (e) Pre-group by priority into formatted text
-    emails_xml = _group_emails_by_priority(emails)
+        # (e) Format loops by priority
+        emails_xml = _group_loops_by_priority(loops)
 
-    # (f) Calendar pre-formatting with day labels
+        # (f) Follow-up logic on loops
+        emails_xml = _apply_follow_up_to_loops(loops, emails_xml)
+
+        logger.info(f"Pre-processing complete: {len(loops)} loops, {len(meetings)} meetings")
+    else:
+        emails_xml = "None — inbox looks clean." if ENABLE_EMAIL else ""
+        overflow_note = ""
+        logger.info(f"Pre-processing complete: no emails, {len(meetings)} meetings")
+
+    # Calendar pre-formatting with day labels
     calendar_xml = _format_calendar(meetings, local_now)
 
     # Format other sections
@@ -294,11 +562,6 @@ def preprocess_for_digest(
     preferences_xml = _format_preferences(prefs)
     memories_xml = memories_context if memories_context else ""
     dismissed_xml = dismissed_context if dismissed_context else ""
-
-    logger.info(
-        f"Pre-processing complete: {len(emails)} emails (grouped), "
-        f"{len(meetings)} meetings formatted"
-    )
 
     return {
         "emails_xml": emails_xml,
@@ -355,17 +618,21 @@ async def run_daily_digest(local_now: datetime = None):
         digest_type, meetings = _get_digest_type_and_calendar(local_now)
         logger.info(f"Digest type: {digest_type} ({local_now.strftime('%A')}), {len(meetings)} meetings")
 
-        # 1. Scan emails
-        logger.info("Scanning inbox...")
-        flagged_emails = scan_inbox()
-        logger.info(f"Found {len(flagged_emails)} flagged emails")
+        # 1. Scan emails (if enabled)
+        if ENABLE_EMAIL:
+            logger.info("Scanning inbox...")
+            flagged_emails = scan_inbox()
+            logger.info(f"Found {len(flagged_emails)} flagged emails")
+        else:
+            logger.info("Email scanning disabled — calendar-only mode")
+            flagged_emails = []
 
         # 2. Load preferences, priorities, and memories
         prefs = load_preferences()
         logger.info("Fetching priorities...")
         priorities = fetch_priorities()
         memories_context = get_memories_for_prompt()
-        dismissed_context = get_dismissed_context()
+        dismissed_context = get_dismissed_context() if ENABLE_EMAIL else ""
 
         # 3. Pre-process: filter, tag, group, format
         logger.info("Running pre-processing pipeline...")
@@ -425,6 +692,9 @@ async def run_daily_digest(local_now: datetime = None):
 
 
 def main():
+    # Run migration at startup (idempotent)
+    migrate_rules_to_memories()
+
     # When called with --force, skip the time check
     if "--force" in sys.argv:
         logger.info("Force mode — skipping time check")

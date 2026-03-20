@@ -28,10 +28,11 @@ EXPIRY_DAYS = {
     "relationship": None,  # no expiry
     "fact": 60,
     "preference": None,  # no expiry
+    "conversation_summary": 14,
 }
 
 # Compactable types — these roll up into summaries. Others are permanent.
-COMPACTABLE_TYPES = {"resolved", "fact"}
+COMPACTABLE_TYPES = {"resolved", "fact", "conversation_summary"}
 
 DEFAULT_MEMORY = {
     "memories": [],
@@ -53,7 +54,14 @@ Type guidelines:
 - "follow_up": something Erez explicitly asked to be reminded about until he says it's done. Use this when Erez says "keep reminding me", "don't let me forget", or "remind me again". These NEVER auto-expire — they stay active until Erez says it's resolved.
 - "relationship": information about a person and their role/relationship to Erez
 - "fact": a concrete fact about Erez's schedule, plans, or situation
-- "preference": a lasting preference about how Erez wants things handled (permanent rules, not temporary tasks)
+- "preference": a lasting pattern about what Erez cares about, how he wants things handled,
+  or what topics/senders are important or unimportant. Capture the *why* and *when* —
+  e.g., "Grant-related emails are almost always urgent — Erez acts on these same-day"
+  rather than just "Grant emails are important".
+  Also extract importance patterns when you notice them:
+  - Topics Erez consistently acts on quickly → high importance preference
+  - Topics Erez repeatedly dismisses or ignores → low importance preference
+  - Senders Erez treats as high-priority → sender importance preference
 
 <already_handled>
 {already_handled}
@@ -155,6 +163,50 @@ def add_memories(new_memories: list[dict]):
     save_memories(data)
 
 
+def get_preference_memories() -> list[dict]:
+    """Return active preference-type memories."""
+    return [m for m in get_active_memories() if m["type"] == "preference"]
+
+
+def migrate_rules_to_memories():
+    """Migrate rules from preferences.json into preference memories.
+
+    Idempotent — safe to run multiple times. Clears the rules list after migration.
+    """
+    try:
+        from preferences import load_preferences, save_preferences
+        prefs = load_preferences()
+        rules = prefs.get("rules", [])
+        if not rules:
+            return
+
+        new_memories = []
+        for rule in rules:
+            # Best-effort tagging from rule text
+            tags = []
+            rule_lower = rule.lower()
+            for keyword in ("email", "meeting", "calendar", "deadline", "travel"):
+                if keyword in rule_lower:
+                    tags.append(keyword)
+            new_memories.append({
+                "type": "preference",
+                "content": rule,
+                "tags": tags,
+                "source": "migrated_rule",
+            })
+
+        if new_memories:
+            add_memories(new_memories)
+            logger.info(f"Migrated {len(new_memories)} rules to preference memories")
+
+        # Clear rules list in preferences.json
+        prefs["rules"] = []
+        save_preferences(prefs)
+        logger.info("Cleared rules list from preferences.json after migration")
+    except Exception as e:
+        logger.warning(f"Rule migration failed (non-fatal): {e}")
+
+
 def get_active_memories() -> list[dict]:
     """Return non-expired individual memories, pruning expired ones."""
     data = load_memories()
@@ -204,6 +256,7 @@ def get_memories_for_prompt(max_chars: int = 2000) -> str:
     three_days_ago = (now - timedelta(days=3)).isoformat()
     recent_facts = [m for m in active if m["type"] == "fact" and m["created_at"] >= seven_days_ago]
     recent_resolved = [m for m in active if m["type"] == "resolved" and m["created_at"] >= three_days_ago]
+    conversation_summaries = [m for m in active if m["type"] == "conversation_summary"]
 
     sections = []
     used = 0
@@ -222,7 +275,7 @@ def get_memories_for_prompt(max_chars: int = 2000) -> str:
     # Tier 2 (~30%): recent facts and resolved items
     tier2_limit = used + int(max_chars * 0.3)
     tier2_lines = []
-    for m in sorted(recent_facts + recent_resolved, key=lambda x: x["created_at"], reverse=True):
+    for m in sorted(recent_facts + recent_resolved + conversation_summaries, key=lambda x: x["created_at"], reverse=True):
         line = f"- [{m['type']}] {m['content']}"
         if used + len(line) + 1 <= tier2_limit:
             tier2_lines.append(line)
@@ -324,6 +377,54 @@ def extract_and_store(conversation_text: str, source: str = "bot"):
             add_memories(memories)
     except Exception as e:
         logger.warning(f"Memory extract_and_store failed (non-fatal): {e}")
+
+
+CONVERSATION_SUMMARY_PROMPT = """Condense this bot conversation into a 2-3 sentence summary capturing:
+- What Erez asked about or wanted to do
+- Key decisions made or actions taken (e.g., dismissals, searches, follow-ups)
+- Any context that would help continue this thread in a future conversation
+
+Be specific — use names, topics, and outcomes. Skip pleasantries.
+Return ONLY the summary text, no JSON or formatting.
+
+<conversation>
+{conversation_log}
+</conversation>"""
+
+
+def summarize_conversation(conversation_log: str):
+    """Generate a condensed summary of a bot conversation and store it.
+
+    Called after multi-exchange conversations to preserve context
+    across sessions. Summaries expire after 14 days and get absorbed
+    into weekly compaction.
+    """
+    try:
+        if len(conversation_log) < 200:
+            return  # too short to summarize
+
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=256,
+            messages=[{
+                "role": "user",
+                "content": CONVERSATION_SUMMARY_PROMPT.format(
+                    conversation_log=conversation_log,
+                ),
+            }],
+        )
+        summary = response.content[0].text.strip()
+        if summary:
+            add_memories([{
+                "type": "conversation_summary",
+                "content": summary,
+                "tags": [],
+                "source": "bot_summary",
+            }])
+            logger.info(f"Stored conversation summary: {summary[:80]}...")
+    except Exception as e:
+        logger.warning(f"Conversation summary failed (non-fatal): {e}")
 
 
 # ---------------------------------------------------------------------------
