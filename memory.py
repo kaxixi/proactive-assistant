@@ -706,7 +706,7 @@ Look for:
 3. AMBIGUITIES — memories that are vague or could mean multiple things
 4. DUPLICATES — multiple memories saying essentially the same thing
 5. STALE PREFERENCES — "preference" items that may no longer apply (e.g., a preference about a sender who hasn't emailed in months, or preferences that contradict each other). Suggest removing or updating them.
-6. STALE RELATIONSHIPS — "relationship" items about people Erez hasn't interacted with recently. Suggest confirming or removing.
+6. STALE FACTS — "fact" items that are old and likely no longer true (e.g., "Erez is preparing for next week's talk" from a month ago). Suggest removing.
 
 Current memories:
 {memories_text}
