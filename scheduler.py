@@ -465,13 +465,14 @@ def _format_calendar(meetings: list[Meeting], local_now: datetime) -> str:
     for m in meetings:
         meeting_date = m.start.date()
 
-        # Compute day label
+        # Compute day label — include day name so Claude doesn't guess wrong
+        day_name = m.start.strftime("%A")
         if meeting_date == today:
-            day_label = "TODAY"
+            day_label = f"TODAY ({day_name})"
         elif meeting_date == tomorrow:
-            day_label = "TOMORROW"
+            day_label = f"TOMORROW ({day_name})"
         else:
-            day_label = m.start.strftime("%A").upper()  # e.g., "WEDNESDAY"
+            day_label = day_name.upper()
 
         # Add day header if it changed
         if day_label != current_day_label:

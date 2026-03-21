@@ -31,6 +31,17 @@ EXPIRY_DAYS = {
     "conversation_summary": 14,
 }
 
+# Hard caps per type — oldest pruned when exceeded
+TYPE_CAPS = {
+    "preference": 30,
+    "relationship": 40,
+    "fact": 50,
+    "resolved": 40,
+    "pending": 30,
+    "follow_up": 20,
+    "conversation_summary": 20,
+}
+
 # Compactable types — these roll up into summaries. Others are permanent.
 COMPACTABLE_TYPES = {"resolved", "fact", "conversation_summary"}
 
@@ -68,6 +79,8 @@ Type guidelines:
 </already_handled>
 
 CRITICAL: Do NOT create "pending" memories for items listed in <already_handled>. Creating pending items for resolved issues will cause the digest to re-flag them, which may confuse Erez into re-doing work he's already completed. If something appears in the handled list, it is DONE — record it as "resolved" if needed, never as "pending".
+
+CRITICAL: When source is "digest", do NOT create "pending" memories at all. Email action items are already tracked as open loops — duplicating them as pending memories causes accumulation and clutter. From digests, only extract: relationships, facts, preferences, and resolved items.
 
 <format>
 Rules:
@@ -124,8 +137,13 @@ def _tags_overlap(tags_a: list, tags_b: list) -> bool:
 def add_memories(new_memories: list[dict]):
     """Append new memories, assigning IDs and expiry dates.
 
+    Dedup: exact content match, plus tag-based dedup (same type + overlapping
+    tags → replace older memory instead of adding duplicate).
+
     When adding a 'resolved' memory, removes conflicting 'pending' memories
     about the same topic (matched by overlapping tags).
+
+    Enforces per-type hard caps — oldest memories pruned when exceeded.
     """
     data = load_memories()
     existing_contents = {m["content"] for m in data["memories"]}
@@ -149,6 +167,29 @@ def add_memories(new_memories: list[dict]):
             if removed:
                 logger.info(f"Resolved memory superseded {removed} pending memories (tags: {mem_tags})")
 
+        # Tag-based dedup: if an existing memory of the same type has
+        # overlapping tags, replace it instead of adding a near-duplicate
+        if mem_tags:
+            replaced = False
+            for i, existing in enumerate(data["memories"]):
+                if existing["type"] == mem_type and _tags_overlap(existing.get("tags", []), mem_tags):
+                    # Replace older with newer
+                    data["memories"][i] = {
+                        "id": existing["id"],  # keep same ID
+                        "type": mem_type,
+                        "content": mem["content"],
+                        "source": mem.get("source", "bot"),
+                        "created_at": now.isoformat(),
+                        "expires_at": (now + timedelta(days=expiry_days)).isoformat() if expiry_days else None,
+                        "tags": list(dict.fromkeys(existing.get("tags", []) + mem_tags)),  # merge tags
+                    }
+                    replaced = True
+                    logger.info(f"Tag-dedup: replaced [{mem_type}] (tags: {mem_tags})")
+                    break
+            if replaced:
+                existing_contents.add(mem["content"])
+                continue
+
         data["memories"].append({
             "id": str(uuid.uuid4()),
             "type": mem_type,
@@ -160,7 +201,33 @@ def add_memories(new_memories: list[dict]):
         })
         existing_contents.add(mem["content"])
 
+    # Enforce per-type hard caps — prune oldest when exceeded
+    _enforce_type_caps(data)
+
     save_memories(data)
+
+
+def _enforce_type_caps(data: dict):
+    """Prune oldest memories when a type exceeds its hard cap."""
+    from collections import defaultdict
+    by_type = defaultdict(list)
+    for i, m in enumerate(data["memories"]):
+        by_type[m["type"]].append((i, m))
+
+    to_remove = set()
+    for mem_type, cap in TYPE_CAPS.items():
+        entries = by_type.get(mem_type, [])
+        if len(entries) <= cap:
+            continue
+        # Sort by created_at ascending, prune oldest
+        entries.sort(key=lambda x: x[1].get("created_at", ""))
+        excess = len(entries) - cap
+        for idx, _ in entries[:excess]:
+            to_remove.add(idx)
+        logger.info(f"Hard cap: pruning {excess} oldest [{mem_type}] memories (cap={cap})")
+
+    if to_remove:
+        data["memories"] = [m for i, m in enumerate(data["memories"]) if i not in to_remove]
 
 
 def get_preference_memories() -> list[dict]:
@@ -638,11 +705,13 @@ Look for:
 2. STALE ITEMS — "pending" items that are very old and may have been silently handled
 3. AMBIGUITIES — memories that are vague or could mean multiple things
 4. DUPLICATES — multiple memories saying essentially the same thing
+5. STALE PREFERENCES — "preference" items that may no longer apply (e.g., a preference about a sender who hasn't emailed in months, or preferences that contradict each other). Suggest removing or updating them.
+6. STALE RELATIONSHIPS — "relationship" items about people Erez hasn't interacted with recently. Suggest confirming or removing.
 
 Current memories:
 {memories_text}
 
-Format your response as a friendly, concise Telegram message to Erez asking him to clarify the issues you found. Group by issue type. For each item, quote the memory and suggest a resolution (e.g., "Is this still pending or can I mark it resolved?"). If everything looks clean, just say so briefly.
+Format your response as a friendly, concise Telegram message to Erez asking him to clarify the issues you found. Group by issue type. For each item, quote the memory and suggest a resolution (e.g., "Is this still pending or can I mark it resolved?", "Is this preference still accurate?"). If everything looks clean, just say so briefly.
 
 Keep it warm and short — this is Telegram, not a report."""
 
