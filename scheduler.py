@@ -245,7 +245,7 @@ For new loops, set loop_id to "NEW". For existing loops, use their existing loop
     email_by_thread = {e.thread_id: e for e in emails}
     urgency_order = {"high": 0, "medium": 1, "low": 2}
 
-    from open_loops import _new_id, _now_iso
+    from open_loops import _new_id
 
     new_loops = []
     for loop_data in result.get("loops", []):

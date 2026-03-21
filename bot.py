@@ -1,7 +1,5 @@
 """Telegram bot — sends digests and handles interactive replies."""
 
-import asyncio
-import json
 import logging
 
 import anthropic
@@ -209,7 +207,7 @@ def _dismiss_email(query: str, reason: str) -> str:
 
         if sender_email_addr.lower() == primary_sender_lower:
             subject = next((h["value"] for h in headers if h["name"].lower() == "subject"), "")
-            dismiss_thread(thread_id, subject=subject, reason=reason, sender_email=sender_email_addr)
+            dismiss_thread(thread_id, subject=subject, reason=reason)
             dismissed_subjects.append(subject)
             seen_thread_ids.add(thread_id)
 

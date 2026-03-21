@@ -437,14 +437,6 @@ def _iso_week(dt: datetime) -> str:
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
-def _month_key(dt: datetime) -> str:
-    """Return month string like '2026-03'."""
-    return dt.strftime("%Y-%m")
-
-
-def _year_key(dt: datetime) -> str:
-    return dt.strftime("%Y")
-
 
 def _summarize_with_claude(items_text: str, level: str, period: str) -> str:
     """Ask Claude to summarize a batch of memories into a compact summary.

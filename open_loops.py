@@ -24,7 +24,7 @@ class OpenLoop:
     age_days: int           # age of oldest unreplied email
     reason: str             # "unreplied" / "needs_followup" / "mixed"
     snippets: list[str]     # 2-3 recent snippets for context
-    status: str = "open"    # "open" / "dismissed" / "follow_up"
+    status: str = "open"    # "open" / "dismissed"
     tags: list[str] = field(default_factory=list)  # person:/topic: tags
     created_at: str = ""
     updated_at: str = ""
@@ -80,7 +80,7 @@ def _is_expired(loop: OpenLoop) -> bool:
 def get_open_loops() -> list[OpenLoop]:
     """Return non-dismissed, non-expired loops (open or follow_up)."""
     loops = load_loops()
-    active = [l for l in loops if l.status in ("open", "follow_up") and not _is_expired(l)]
+    active = [l for l in loops if l.status == "open" and not _is_expired(l)]
     # Clean up expired loops from disk
     remaining = [l for l in loops if not _is_expired(l)]
     if len(remaining) != len(loops):

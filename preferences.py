@@ -28,7 +28,7 @@ def save_preferences(prefs: dict):
 
 
 
-def dismiss_thread(thread_id: str, subject: str = "", reason: str = "", sender_email: str = ""):
+def dismiss_thread(thread_id: str, subject: str = "", reason: str = ""):
     """Dismiss a thread so it won't appear in future digests."""
     prefs = load_preferences()
     dismissed = prefs.get("dismissed_threads", [])
@@ -41,8 +41,6 @@ def dismiss_thread(thread_id: str, subject: str = "", reason: str = "", sender_e
         "reason": reason,
         "dismissed_at": datetime.now(timezone.utc).isoformat(),
     }
-    if sender_email:
-        entry["sender_email"] = sender_email.lower()
     dismissed.append(entry)
     prefs["dismissed_threads"] = dismissed
     save_preferences(prefs)
