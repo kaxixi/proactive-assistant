@@ -389,12 +389,17 @@ def _cap_loops(loops: list[OpenLoop]) -> tuple[list[OpenLoop], str]:
 
 
 def _group_loops_by_priority(loops: list[OpenLoop]) -> str:
-    """Format loops into high/medium/low sections as text."""
+    """Format loops into high/medium/low sections as numbered text.
+
+    Each loop gets a number (1, 2, 3...) so the user can reference them
+    conversationally: "1 and 3 handled, tell me more about 5".
+    """
     groups = {"high": [], "medium": [], "low": []}
     for l in loops:
         groups.get(l.urgency, groups["low"]).append(l)
 
     lines = []
+    loop_num = 1
     for level, label in [("high", "HIGH PRIORITY"), ("medium", "MEDIUM PRIORITY"), ("low", "LOW PRIORITY")]:
         group = groups[level]
         if not group:
@@ -403,7 +408,7 @@ def _group_loops_by_priority(loops: list[OpenLoop]) -> str:
         for l in group:
             sender_list = ", ".join(l.senders[:3])
             lines.append(
-                f"- [loop:{l.loop_id}] \"{l.title}\" — {len(l.thread_ids)} thread(s) "
+                f"- #{loop_num} [loop:{l.loop_id}] \"{l.title}\" — {len(l.thread_ids)} thread(s) "
                 f"({sender_list}), oldest {l.age_days} days, reason: {l.reason}"
             )
             if l.summary:
@@ -411,6 +416,7 @@ def _group_loops_by_priority(loops: list[OpenLoop]) -> str:
             if l.snippets:
                 lines.append(f"  Latest: {l.snippets[0][:200]}")
             lines.append(f"  Tags: {', '.join(l.tags)}")
+            loop_num += 1
         lines.append("")
 
     return "\n".join(lines) if lines else "None — inbox looks clean."
@@ -671,7 +677,7 @@ async def run_daily_digest(local_now: datetime = None):
         )
 
         # 5. Send via Telegram
-        await send_message(digest)
+        await send_message(digest, include_buttons=True)
         logger.info("Daily digest sent successfully")
 
         # 6. Extract memories from the digest we just sent

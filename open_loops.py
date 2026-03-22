@@ -5,7 +5,7 @@ import os
 import logging
 import uuid
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,8 @@ class OpenLoop:
     updated_at: str = ""
     dismissed_at: str | None = None
     dismiss_reason: str = ""
+    snoozed_until: str | None = None
+    snooze_count: int = 0
 
 
 def _new_id() -> str:
@@ -77,10 +79,23 @@ def _is_expired(loop: OpenLoop) -> bool:
         return False
 
 
+def _is_snoozed(loop: OpenLoop) -> bool:
+    """Check if a loop is currently snoozed."""
+    if not loop.snoozed_until:
+        return False
+    try:
+        snooze_end = datetime.fromisoformat(loop.snoozed_until)
+        if snooze_end.tzinfo is None:
+            snooze_end = snooze_end.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) < snooze_end
+    except (ValueError, TypeError):
+        return False
+
+
 def get_open_loops() -> list[OpenLoop]:
-    """Return non-dismissed, non-expired loops (open or follow_up)."""
+    """Return non-dismissed, non-expired, non-snoozed loops."""
     loops = load_loops()
-    active = [l for l in loops if l.status == "open" and not _is_expired(l)]
+    active = [l for l in loops if l.status == "open" and not _is_expired(l) and not _is_snoozed(l)]
     # Clean up expired loops from disk
     remaining = [l for l in loops if not _is_expired(l)]
     if len(remaining) != len(loops):
@@ -123,6 +138,29 @@ def dismiss_loop(loop_id: str, reason: str) -> OpenLoop | None:
     return None
 
 
+def snooze_loop(loop_id: str, days: int = 2) -> OpenLoop | None:
+    """Snooze a loop for N days. Returns the loop or None."""
+    loops = load_loops()
+    for loop in loops:
+        if loop.loop_id == loop_id:
+            loop.snoozed_until = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+            loop.snooze_count += 1
+            loop.updated_at = _now_iso()
+            save_loops(loops)
+            logger.info(f"Snoozed loop {loop_id}: {loop.title} for {days} days (count: {loop.snooze_count})")
+            return loop
+    return None
+
+
+def get_loop_by_id(loop_id: str) -> OpenLoop | None:
+    """Find a loop by ID regardless of status."""
+    loops = load_loops()
+    for loop in loops:
+        if loop.loop_id == loop_id:
+            return loop
+    return None
+
+
 def upsert_loops(new_loops: list[OpenLoop]):
     """Create or update loops from the grouping step.
 
@@ -155,34 +193,59 @@ def upsert_loops(new_loops: list[OpenLoop]):
 
 
 def find_loop_by_query(query: str) -> OpenLoop | None:
-    """Find an open loop matching a search query (fuzzy match against title, senders, tags)."""
-    query_lower = query.lower()
-    open_loops = get_open_loops()
+    """Find an open loop matching a search query.
 
-    # Score each loop
+    Matches individual query words against loop fields. Requires at least
+    2 words to match (or 1 word if the query is a single word). Scores
+    by how many query words hit and where they hit (title > sender > tag).
+    """
+    query_lower = query.lower()
+    query_words = [w for w in query_lower.split() if len(w) >= 3]
+    if not query_words:
+        return None
+
+    open_loops = get_open_loops()
     best_match = None
     best_score = 0
 
     for loop in open_loops:
+        title_lower = loop.title.lower()
+        senders_lower = " ".join(loop.senders).lower()
+        tags_lower = " ".join(
+            tag.split(":", 1)[-1] if ":" in tag else tag
+            for tag in loop.tags
+        ).lower()
+        summary_lower = loop.summary.lower()
+
         score = 0
-        # Title match
-        if query_lower in loop.title.lower():
-            score += 10
-        # Sender match
-        for sender in loop.senders:
-            if query_lower in sender.lower():
-                score += 8
-        # Tag match
-        for tag in loop.tags:
-            tag_value = tag.split(":", 1)[-1].lower() if ":" in tag else tag.lower()
-            if query_lower in tag_value or tag_value in query_lower:
-                score += 6
-        # Summary match
-        if query_lower in loop.summary.lower():
-            score += 3
+        words_matched = 0
+
+        for word in query_words:
+            word_score = 0
+            if word in title_lower:
+                word_score = 10
+            elif word in senders_lower:
+                word_score = 8
+            elif word in tags_lower:
+                word_score = 5
+            elif word in summary_lower:
+                word_score = 3
+            if word_score > 0:
+                score += word_score
+                words_matched += 1
+
+        # Full query as phrase in title is a strong signal
+        if query_lower in title_lower:
+            score += 15
+
+        # Require at least 2 matching words for multi-word queries
+        # to avoid false positives from single-word tag overlaps
+        min_words = min(2, len(query_words))
+        if words_matched < min_words:
+            continue
 
         if score > best_score:
             best_score = score
             best_match = loop
 
-    return best_match if best_score > 0 else None
+    return best_match

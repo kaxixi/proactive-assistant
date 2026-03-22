@@ -143,6 +143,40 @@ def _extract_body_preview(payload: dict, max_chars: int = 500) -> str:
     return ""
 
 
+def fetch_full_thread(thread_id: str, max_chars_per_message: int = 2000) -> str:
+    """Fetch all messages in a Gmail thread and format them chronologically.
+
+    Returns a formatted string with each message's sender, date, and body.
+    Used for "tell me more" deep dives on open loops.
+    """
+    service = _get_gmail_service()
+    thread = service.users().threads().get(
+        userId="me", id=thread_id, format="full"
+    ).execute()
+
+    messages = thread.get("messages", [])
+    formatted_parts = []
+
+    for msg in messages:
+        headers = msg.get("payload", {}).get("headers", [])
+        sender = _get_header(headers, "From")
+        date = _get_header(headers, "Date")
+        subject = _get_header(headers, "Subject")
+
+        body = _extract_body_preview(msg.get("payload", {}), max_chars=max_chars_per_message)
+
+        # Extract display name from sender
+        sender_display = sender.split("<")[0].strip().strip('"') if "<" in sender else sender
+
+        formatted_parts.append(
+            f"--- {sender_display} ({date}) ---\n"
+            f"Subject: {subject}\n"
+            f"{body}\n"
+        )
+
+    return "\n".join(formatted_parts)
+
+
 def scan_inbox(my_email: str = None, days_back: int = 14) -> list[FlaggedEmail]:
     """Scan inbox for emails that need attention.
 

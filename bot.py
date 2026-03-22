@@ -5,11 +5,7 @@ import logging
 import anthropic
 from telegram import Bot, Update
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+    Application, CommandHandler, MessageHandler, ContextTypes, filters,
 )
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, ANTHROPIC_API_KEY, CLAUDE_MODEL, ENABLE_EMAIL
@@ -22,6 +18,17 @@ logger = logging.getLogger(__name__)
 
 # Store recent digest so replies have context
 _last_digest = None
+
+# Multi-turn conversation state
+_conversation_history: list[dict] = []
+_MAX_HISTORY = 5
+_last_interaction_time: float = 0
+
+# Cache for fetched full threads (cleared on new digest)
+_thread_cache: dict[str, str] = {}
+
+# Numbered loop references from latest digest (number → loop_id)
+_digest_loops: dict[int, str] = {}
 
 # Tool definitions for Claude
 _BASE_TOOLS = [
@@ -171,10 +178,19 @@ def _dismiss_email(query: str, reason: str) -> str:
     creds = get_credentials()
     service = build("gmail", "v1", credentials=creds)
 
+    # Search inbox only, with subject scope to avoid broad matches
+    gmail_query = f"in:inbox subject:({query})"
     resp = service.users().messages().list(
-        userId="me", q=query, maxResults=10
+        userId="me", q=gmail_query, maxResults=10
     ).execute()
     messages = resp.get("messages", [])
+
+    # If subject search fails, try broader search
+    if not messages:
+        resp = service.users().messages().list(
+            userId="me", q=f"in:inbox {query}", maxResults=10
+        ).execute()
+        messages = resp.get("messages", [])
 
     if not messages:
         return f"No emails or loops found matching '{query}'. Could not dismiss."
@@ -293,14 +309,27 @@ def _build_system_prompt(extra_instructions: str = "") -> str:
     if memory_context:
         memory_section = f"\n<memory>\n{memory_context}\n</memory>\n"
 
+    # Build numbered loop reference for the system prompt
+    loop_ref = ""
+    if _digest_loops:
+        from open_loops import get_loop_by_id
+        ref_lines = []
+        for num, lid in sorted(_digest_loops.items()):
+            loop = get_loop_by_id(lid)
+            if loop:
+                ref_lines.append(f"  #{num} = \"{loop.title}\" (loop_id: {lid})")
+        if ref_lines:
+            loop_ref = "\n<digest_loop_numbers>\n" + "\n".join(ref_lines) + "\n</digest_loop_numbers>\n"
+
     if ENABLE_EMAIL:
         dismiss_instructions = """- When Erez says something is handled, resolved, done, taken care of, or not relevant — IMMEDIATELY use the dismiss_email tool. This dismisses the matching open loop and all its related email threads at once.
   Without dismissing, the item will reappear in future digests. Erez may not remember he already dealt with it, and might accidentally re-send an email or re-do work he's already completed.
+  - Erez may reference loops by NUMBER (e.g., "1 handled", "dismiss 3 and 5", "tell me more about 2"). Use the <digest_loop_numbers> section to map numbers to loop titles, then use the dismiss_email tool with the loop title as the query.
   Examples of when to dismiss:
-  - "I already replied to that" → dismiss with reason "replied"
+  - "1 handled" → find loop #1's title, dismiss with reason "handled"
+  - "1 and 3 handled" → dismiss both loops
   - "That's handled" → dismiss with reason "handled"
   - "Not relevant" / "Don't need that" → dismiss with reason "not relevant"
-  - "I talked to them about it" → dismiss with reason "resolved offline"
   When in doubt about whether Erez means to dismiss, dismiss it. It's better to dismiss and have him re-flag than to keep nagging about handled items."""
         tools_description = "You have tools to search Gmail, Google Drive, and Dropbox, and to dismiss open loops (email topics) from future digests."
     else:
@@ -313,7 +342,7 @@ You communicate via Telegram.
 <preferences>
 {rules_text}
 </preferences>
-{digest_section}{memory_section}
+{digest_section}{memory_section}{loop_ref}
 {tools_description}
 
 Instructions:
@@ -437,14 +466,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
 
+    global _conversation_history, _last_interaction_time
+
     user_text = update.message.text
     logger.info(f"Received message: {user_text[:100]}...")
 
     system_prompt = _build_system_prompt()
 
     try:
+        import time
+        # Check staleness — clear history if >30 minutes since last interaction
+        if _last_interaction_time and (time.time() - _last_interaction_time > 1800):
+            _conversation_history = []
+        _last_interaction_time = time.time()
+
         client = _get_claude()
-        messages = [{"role": "user", "content": user_text}]
+        # Build messages with conversation history for multi-turn context
+        messages = list(_conversation_history) + [{"role": "user", "content": user_text}]
 
         response = client.messages.create(
             model=CLAUDE_MODEL,
@@ -502,6 +540,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         display_text = "\n".join(display_lines).strip()
         if display_text:
             await update.message.reply_text(display_text)
+
+        # Update conversation history for multi-turn
+        _conversation_history.append({"role": "user", "content": user_text})
+        _conversation_history.append({"role": "assistant", "content": reply})
+        if len(_conversation_history) > _MAX_HISTORY * 2:
+            _conversation_history = _conversation_history[-_MAX_HISTORY * 2:]
 
         # Extract memories from this conversation (non-blocking, non-fatal)
         try:
@@ -625,10 +669,11 @@ Additional instructions for document handling:
         )
 
 
-async def send_message(text: str):
+async def send_message(text: str, include_buttons: bool = False):
     """Send a message to the configured chat (used by scheduler)."""
-    global _last_digest
+    global _last_digest, _thread_cache
     _last_digest = text
+    _thread_cache = {}  # clear cache on new digest
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     async with bot:
         if len(text) <= 4096:
@@ -638,6 +683,37 @@ async def send_message(text: str):
                 await bot.send_message(
                     chat_id=TELEGRAM_CHAT_ID, text=text[i:i + 4096]
                 )
+
+        # Store numbered loop references for conversational triage
+        if include_buttons and ENABLE_EMAIL:
+            try:
+                from open_loops import get_open_loops
+                loops = get_open_loops()
+                urgency_order = {"high": 0, "medium": 1, "low": 2}
+                loops.sort(key=lambda l: (urgency_order.get(l.urgency, 2), -l.age_days))
+                _digest_loops.clear()
+                for i, loop in enumerate(loops[:15], 1):
+                    _digest_loops[i] = loop.loop_id
+            except Exception as e:
+                logger.warning(f"Failed to build loop references: {e}")
+
+            # Send pattern suggestions if any
+            try:
+                from interaction_tracker import detect_patterns
+                patterns = detect_patterns()
+                if patterns:
+                    suggestion_lines = []
+                    for p in patterns:
+                        suggestion_lines.append(
+                            f"📊 {p['description']}. Auto-deprioritize these? "
+                            f"(Reply 'yes deprioritize {p['value']}' or 'no')"
+                        )
+                    await bot.send_message(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        text="\n\n".join(suggestion_lines),
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to send pattern suggestions: {e}")
 
 
 def run_bot():
