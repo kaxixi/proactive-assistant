@@ -1,5 +1,6 @@
 """Gmail scanning — flags emails at risk of being dropped."""
 
+import base64
 import email.utils
 import logging
 import re
@@ -109,6 +110,37 @@ def _is_newsletter(subject: str, headers: list) -> bool:
     if _get_header(headers, "List-Unsubscribe"):
         return True
     return False
+
+
+def _extract_body_preview(payload: dict, max_chars: int = 500) -> str:
+    """Extract plain text body preview from a full-format Gmail message payload."""
+    def _decode(data: str) -> str:
+        try:
+            return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+
+    # Try to find text/plain part
+    if "parts" in payload:
+        for part in payload["parts"]:
+            if part.get("mimeType") == "text/plain":
+                data = part.get("body", {}).get("data", "")
+                if data:
+                    return _decode(data)[:max_chars]
+            # Handle nested multipart
+            if "parts" in part:
+                for subpart in part["parts"]:
+                    if subpart.get("mimeType") == "text/plain":
+                        data = subpart.get("body", {}).get("data", "")
+                        if data:
+                            return _decode(data)[:max_chars]
+
+    # Single-part message
+    body_data = payload.get("body", {}).get("data", "")
+    if body_data:
+        return _decode(body_data)[:max_chars]
+
+    return ""
 
 
 def scan_inbox(my_email: str = None, days_back: int = 14) -> list[FlaggedEmail]:
@@ -271,6 +303,44 @@ def scan_inbox(my_email: str = None, days_back: int = 14) -> list[FlaggedEmail]:
     # Sort: high urgency first, then by age descending
     urgency_order = {"high": 0, "medium": 1, "low": 2}
     flagged.sort(key=lambda e: (urgency_order[e.urgency], -e.age_days))
+
+    # Second pass: fetch body previews for flagged emails (format=full, last message only)
+    if flagged:
+        logger.info(f"Fetching body previews for {len(flagged)} flagged emails...")
+        msg_to_email = {}  # message_id → FlaggedEmail
+        for fe in flagged:
+            msg_to_email[fe.message_id] = fe
+
+        for i in range(0, len(flagged), batch_size):
+            batch = service.new_batch_http_request()
+            batch_results = {}
+
+            def _make_body_callback(mid):
+                def callback(request_id, response, exception):
+                    if exception is None:
+                        batch_results[mid] = response
+                    else:
+                        logger.warning(f"Body fetch failed for {mid}: {exception}")
+                return callback
+
+            for fe in flagged[i:i + batch_size]:
+                batch.add(
+                    service.users().messages().get(
+                        userId="me", id=fe.message_id, format="full",
+                    ),
+                    callback=_make_body_callback(fe.message_id),
+                )
+
+            batch.execute()
+
+            for mid, msg_data in batch_results.items():
+                payload = msg_data.get("payload", {})
+                body = _extract_body_preview(payload)
+                if body and mid in msg_to_email:
+                    # Replace the short snippet with the richer body preview
+                    msg_to_email[mid].snippet = body
+
+        logger.info("Body previews fetched")
 
     logger.info(f"Flagged {len(flagged)} actionable emails, {len(newsletters)} newsletters")
     return flagged

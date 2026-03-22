@@ -101,7 +101,8 @@ def get_loop_thread_ids(status: str = "dismissed") -> set[str]:
 
 
 def dismiss_loop(loop_id: str, reason: str) -> OpenLoop | None:
-    """Dismiss a loop by ID. Returns the dismissed loop or None."""
+    """Dismiss a loop by ID. Also clears matching follow-up memories.
+    Returns the dismissed loop or None."""
     loops = load_loops()
     for loop in loops:
         if loop.loop_id == loop_id:
@@ -111,6 +112,13 @@ def dismiss_loop(loop_id: str, reason: str) -> OpenLoop | None:
             loop.updated_at = _now_iso()
             save_loops(loops)
             logger.info(f"Dismissed loop {loop_id}: {loop.title} ({reason})")
+            # Clear follow-up memories that match this loop's tags
+            if loop.tags:
+                try:
+                    from memory import clear_follow_ups_by_tags
+                    clear_follow_ups_by_tags(loop.tags)
+                except Exception as e:
+                    logger.warning(f"Failed to clear follow-ups for loop {loop_id}: {e}")
             return loop
     return None
 

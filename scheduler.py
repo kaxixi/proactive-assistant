@@ -138,10 +138,12 @@ def _group_into_loops(emails: list[FlaggedEmail]) -> list[OpenLoop]:
     # Build the prompt
     email_lines = []
     for e in emails:
+        last_sender = "other person" if e.reason == "unreplied" else "Erez"
         email_lines.append(
             f"- thread_id: {e.thread_id}, subject: {e.subject}, "
             f"sender: {e.sender_name} <{e.sender}>, age_days: {e.age_days}, "
-            f"urgency: {e.urgency}, reason: {e.reason}, snippet: {e.snippet}"
+            f"urgency: {e.urgency}, reason: {e.reason}, last_message_by: {last_sender}, "
+            f"snippet: {e.snippet}"
         )
 
     existing_loop_lines = []
@@ -174,7 +176,11 @@ def _group_into_loops(emails: list[FlaggedEmail]) -> list[OpenLoop]:
 
     memory_block = "\n".join(context_lines) if context_lines else "None"
 
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
     prompt = f"""You are grouping emails into topic-level "open loops". An open loop is a topic or concern that may span multiple email threads (e.g., "Arjun's HCRP application" groups emails from both Arjun and CommunityForce about the same application).
+
+Today's date: {today}
 
 <emails>
 {chr(10).join(email_lines)}
@@ -199,13 +205,18 @@ Instructions:
    - Emails matching active follow-ups → set urgency to "high"
    - Apply learned preferences (e.g., "skip recruiting emails" → urgency "low")
 
+CRITICAL — Accuracy rules for summaries:
+7. READ the email body/snippet carefully. Your summary must accurately reflect WHO is asking WHOM for WHAT. Do not guess or infer roles — state only what the email text explicitly says.
+8. Note who sent the last message. If Erez sent the last message and is waiting for a reply, say "Erez replied, waiting for response" — do NOT say the other person needs a reply.
+9. If the snippet is too short to understand the context, set summary to "Context unclear from preview — [subject] from [sender]" and set urgency to "low".
+
 Return ONLY valid JSON (no markdown fences) with this structure:
 {{
   "loops": [
     {{
       "loop_id": "existing_id_or_NEW",
       "title": "Short descriptive title",
-      "summary": "1-2 sentence summary of what this loop is about",
+      "summary": "1-2 sentence summary based ONLY on what the email text says",
       "thread_ids": ["id1", "id2"],
       "senders": ["email1@example.com"],
       "tags": ["person:Arjun", "topic:hcrp"],
@@ -315,7 +326,13 @@ def _fallback_loops(emails: list[FlaggedEmail]) -> list[OpenLoop]:
 
 
 def _priority_match_loops(loops: list[OpenLoop], priorities: str) -> list[OpenLoop]:
-    """Tag loops that match keywords from the priorities list."""
+    """Tag loops that match keywords from the priorities list.
+
+    Uses full priority lines as phrases (strong match) and individual words
+    6+ chars as keywords (weaker match). Short words like first names are
+    only matched as part of the full phrase to avoid false positives
+    (e.g., "Jeff" in priorities matching any Jeffrey in the inbox).
+    """
     if not priorities:
         return loops
 
@@ -324,17 +341,15 @@ def _priority_match_loops(loops: list[OpenLoop], priorities: str) -> list[OpenLo
         if line.strip() and len(line.strip()) > 3
     ]
 
+    # Full lines are strong matches; individual words must be 6+ chars
+    # to avoid ambiguous first-name matches
     keywords = []
     for line in priority_lines:
         keywords.append(line.lower())
-        for word in re.findall(r'\b[a-zA-Z]{4,}\b', line):
+        for word in re.findall(r'\b[a-zA-Z]{6,}\b', line):
             if word.lower() not in {
-                "with", "from", "that", "this", "have", "will", "been",
-                "more", "about", "would", "their", "there", "which", "could",
-                "should", "other", "than", "into", "some", "what", "your",
-                "when", "them", "then", "each", "make", "like", "just",
-                "over", "also", "back", "after", "work", "only", "most",
-                "very", "here", "need", "want", "does", "done",
+                "should", "before", "after", "about", "would", "could",
+                "their", "there", "which", "other", "these", "those",
             }:
                 keywords.append(word.lower())
 

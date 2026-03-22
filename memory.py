@@ -121,6 +121,20 @@ def save_memories(data: dict):
 # Add and retrieve memories
 # ---------------------------------------------------------------------------
 
+def clear_follow_ups_by_tags(tags: list):
+    """Remove follow_up memories that match the given tags (used when a loop is dismissed)."""
+    data = load_memories()
+    before = len(data["memories"])
+    data["memories"] = [
+        m for m in data["memories"]
+        if not (m["type"] == "follow_up" and _tags_overlap(m.get("tags", []), tags))
+    ]
+    removed = before - len(data["memories"])
+    if removed:
+        save_memories(data)
+        logger.info(f"Cleared {removed} follow-up memories matching tags {tags}")
+
+
 def _tags_overlap(tags_a: list, tags_b: list) -> bool:
     """Check if two tag lists share any person: tags or 2+ general tags."""
     set_a = set(tags_a)
