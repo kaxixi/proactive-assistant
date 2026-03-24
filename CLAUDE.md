@@ -14,6 +14,8 @@ A daily automation system that acts as a proactive personal assistant, delivered
 - **priorities.py** — Fetches a published priorities list (URL configurable via PRIORITIES_URL env var).
 - **availability.py** — Computes free meeting slots. Supports `/availability` and `/morningavailability` commands with flexible date parsing.
 - **preferences.py** — Legacy dismissed threads storage (preferences.json). Preference rules live in memory.json.
+- **scan_state.py** — Tracks incremental email scanning progress (last scan timestamp, seen thread IDs).
+- **interaction_tracker.py** — Records button presses and loop interactions, detects behavioral patterns for auto-deprioritization suggestions.
 - **drive_search.py** / **dropbox_search.py** — File search for Google Drive and Dropbox.
 - **google_auth.py** — Shared Google OAuth2. Scopes conditional: Calendar+Drive always, Gmail only when ENABLE_EMAIL=true.
 - **config.py** — Loads config from .env. Includes DIGEST_HOUR/DIGEST_MINUTE/ENABLE_EMAIL/CLAUDE_MODEL.
@@ -55,35 +57,75 @@ All learned knowledge lives in `memory.json`. The system learns from digest extr
 
 Open loops are the unit of email tracking. A loop is a topic-level concern (e.g., "Arjun's HCRP application") that may group multiple Gmail threads from different senders.
 
+### Incremental scanning
+- `scan_state.json` tracks `last_scan_at` timestamp and `scanned_thread_ids` (threads seen but not in any loop)
+- First run: full 14-day backfill. Subsequent runs: only fetch emails newer than `last_scan_at`
+- Threads already in any loop (open or dismissed) are never re-processed
+- Previously filtered threads are re-evaluated if they have new activity
+
 ### Pipeline
 ```
-email_monitor.scan_inbox()          → list[FlaggedEmail]
-scheduler._hard_filter_dismissed()  → removes threads from dismissed loops + legacy dismissed
-scheduler._group_into_loops()       → Claude API call groups emails into loops (with learned context)
+email_monitor.scan_inbox()          → list[FlaggedEmail] (incremental since last scan)
+scheduler: subtract accounted-for thread IDs (loops + previously scanned)
+scheduler._hard_filter_dismissed()  → safety net for dismissed threads
+scheduler._group_into_loops()       → Claude groups ONLY new emails into loops (with existing loop context)
 scheduler._priority_match_loops()   → tag loops matching priorities list
-scheduler._cap_loops()              → cap at ~15 loops
-scheduler._group_loops_by_priority()→ format as text
+scheduler._cap_loops()              → cap at ~10 loops
+scheduler._group_loops_by_priority()→ format as numbered text (#1, #2, ...)
 scheduler._apply_follow_up_to_loops()→ annotate with follow-up reminders
 analyzer.generate_daily_digest()    → Claude generates natural language digest from loops
 ```
 
+### Numbered loop references
+- Loops are numbered sequentially (#1, #2...) in both the digest and `/loops` command
+- Number→loop_id mapping persisted in `digest_loops.json` (written by scheduler and /loops, read by bot)
+- Users reference loops by number: "1 handled", "dismiss 3 and 5", "tell me more about 2"
+- Bot system prompt includes `<digest_loop_numbers>` section mapping numbers to titles
+
 ### Dismissal flow
-1. User tells bot "dismiss X" → `find_loop_by_query()` searches loops by title/senders/tags
+1. User tells bot "dismiss X" or "3 handled" → `find_loop_by_query()` searches loops by title/senders/tags
 2. `dismiss_loop()` sets status=dismissed, clears matching follow-up memories
 3. Creates `resolved` memory with loop's tags
 4. Falls back to Gmail search if no loop matches (for items not in latest scan)
 
+### Snooze
+- `snooze_loop(loop_id, days=2)` hides a loop for N days
+- Snoozed loops filtered out by `get_open_loops()`, reappear automatically
+- Repeated snoozes tracked (`snooze_count`) for pattern detection
+
 ### Lifecycle
-- Created during each digest pipeline by Claude grouping call
+- Created during digest pipeline by Claude grouping call (only for new emails)
 - Persisted in `open_loops.json` between digests (new emails join existing loops)
 - Expire after 30 days without activity
-- Dismissed loop thread IDs are hard-filtered from future scans
+- Dismissed loop thread IDs are permanently filtered from future scans
+
+## Bot commands
+- `/start`, `/help` — show available commands
+- `/status` — check service connections
+- `/digest` — trigger a digest right now
+- `/loops` — show open loops dashboard with numbered list
+- `/search <query>` — search Drive and Dropbox
+- `/availability [this/next week]` — show free meeting slots
+- `/morningavailability [this/next week]` — morning slots only
+
+## Multi-turn conversations
+- Bot keeps last 5 exchanges in `_conversation_history` (30-minute staleness timeout)
+- Enables drill-down: "tell me more about 2" → detailed analysis → "dismiss it"
+- Full thread fetch via `fetch_full_thread()` for deep dives, cached in `_thread_cache`
+- Conversation summaries generated after multi-turn exchanges
+
+## Pattern detection
+- `interaction_tracker.py` records every dismissal and snooze with loop metadata
+- `detect_patterns()` identifies repeated actions (3+ similar over 7+ days)
+- Suggests auto-deprioritization as preference memories after each digest
+- Declined suggestions recorded as facts to prevent re-suggestion for 30 days
 
 ## Key design decisions
 - **Telegram for delivery** — works over WiFi internationally, supports interactive replies
 - **Claude Sonnet for analysis** — balances cost and quality for daily use. Model configurable via CLAUDE_MODEL env var.
 - **Calendar-first, email-optional** — calendar features work independently (ENABLE_EMAIL=false). Email adds Gmail scanning, search, and loop dismissals.
 - **Batch Gmail API** — threads fetched in batches of 20 for ~5x speedup
+- **Incremental scanning** — only process new emails since last scan. Open loops are the persistent source of truth. Dismissed threads never re-processed.
 - **Loop-based dismissals** — dismissing a topic closes the loop (all member threads), clears follow-up memories, creates resolved memory. Legacy per-thread dismissals in preferences.json still work as fallback.
 - **OAuth token on VM** — token.json must be generated locally (browser required) then copied to VM
 - **Timezone-aware scheduling** — timer fires every 3h, Python checks Google Calendar timezone. No hardcoded timezone.
@@ -115,3 +157,4 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 
 ## Sensitive files (never commit)
 - .env, credentials.json, token.json, preferences.json, memory.json, open_loops.json
+- scan_state.json, interactions.json, digest_loops.json
