@@ -161,6 +161,19 @@ def get_loop_by_id(loop_id: str) -> OpenLoop | None:
     return None
 
 
+def get_all_loop_thread_ids() -> set[str]:
+    """Return ALL thread IDs across ALL loops (any status, including expired).
+
+    Used by incremental scanning to determine which threads are already
+    accounted for in the loop system.
+    """
+    loops = load_loops()
+    ids = set()
+    for l in loops:
+        ids.update(l.thread_ids)
+    return ids
+
+
 def upsert_loops(new_loops: list[OpenLoop]):
     """Create or update loops from the grouping step.
 

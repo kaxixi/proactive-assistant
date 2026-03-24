@@ -177,8 +177,13 @@ def fetch_full_thread(thread_id: str, max_chars_per_message: int = 2000) -> str:
     return "\n".join(formatted_parts)
 
 
-def scan_inbox(my_email: str = None, days_back: int = 14) -> list[FlaggedEmail]:
+def scan_inbox(my_email: str = None, days_back: int = 14, after_timestamp: str = None) -> list[FlaggedEmail]:
     """Scan inbox for emails that need attention.
+
+    Args:
+        after_timestamp: ISO timestamp for incremental scanning. When provided,
+            only fetches emails newer than this time (with 1-hour overlap).
+            When None, uses days_back for a full backfill scan.
 
     Returns a list of FlaggedEmail objects sorted by urgency.
     """
@@ -192,8 +197,20 @@ def scan_inbox(my_email: str = None, days_back: int = 14) -> list[FlaggedEmail]:
         profile = service.users().getProfile(userId="me").execute()
         my_email = profile["emailAddress"].lower()
 
-    after_date = (now - timedelta(days=days_back)).strftime("%Y/%m/%d")
-    query = f"in:inbox after:{after_date}"
+    if after_timestamp:
+        try:
+            scan_after = datetime.fromisoformat(after_timestamp)
+            if scan_after.tzinfo is None:
+                scan_after = scan_after.replace(tzinfo=timezone.utc)
+            # 1-hour overlap to catch edge cases
+            epoch = int((scan_after - timedelta(hours=1)).timestamp())
+            query = f"in:inbox after:{epoch}"
+        except (ValueError, TypeError):
+            after_date = (now - timedelta(days=days_back)).strftime("%Y/%m/%d")
+            query = f"in:inbox after:{after_date}"
+    else:
+        after_date = (now - timedelta(days=days_back)).strftime("%Y/%m/%d")
+        query = f"in:inbox after:{after_date}"
 
     threads = []
     page_token = None

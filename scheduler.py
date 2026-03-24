@@ -22,8 +22,9 @@ from memory import (
 from bot import send_message
 from config import DIGEST_HOUR, DIGEST_MINUTE, ENABLE_EMAIL, ANTHROPIC_API_KEY, CLAUDE_MODEL
 from open_loops import (
-    OpenLoop, get_open_loops, get_loop_thread_ids, upsert_loops,
+    OpenLoop, get_open_loops, get_loop_thread_ids, get_all_loop_thread_ids, upsert_loops,
 )
+from scan_state import get_last_scan_time, get_scanned_thread_ids, update_after_scan
 
 if ENABLE_EMAIL:
     from email_monitor import scan_inbox, FlaggedEmail
@@ -37,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Maximum loops to pass to Claude after pre-processing
-MAX_LOOPS = 15
+MAX_LOOPS = 10
 
 
 def _get_digest_type_and_calendar(local_now: datetime) -> tuple[str, list]:
@@ -178,7 +179,9 @@ def _group_into_loops(emails: list[FlaggedEmail]) -> list[OpenLoop]:
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    prompt = f"""You are grouping emails into topic-level "open loops". An open loop is a topic or concern that may span multiple email threads (e.g., "Arjun's HCRP application" groups emails from both Arjun and CommunityForce about the same application).
+    prompt = f"""You are assigning NEW emails to existing open loops or creating new ones. An open loop is a topic or concern that may span multiple email threads (e.g., "Arjun's HCRP application" groups emails from both Arjun and CommunityForce about the same application).
+
+These are emails that appeared since the last scan. Most of the inbox is already tracked in the existing loops below. Assign accurately: same topic = same loop, different topic = new loop.
 
 Today's date: {today}
 
@@ -550,29 +553,67 @@ def preprocess_for_digest(
     """
     logger.info(f"Pre-processing: starting with {len(flagged_emails)} emails, {len(meetings)} meetings")
 
-    if ENABLE_EMAIL and flagged_emails:
-        # (a) Hard filter dismissed thread IDs (legacy + loop-dismissed)
-        emails = _hard_filter_dismissed(flagged_emails)
+    if ENABLE_EMAIL:
+        scan_timestamp = datetime.now(timezone.utc).isoformat()
+        all_scanned_ids = [e.thread_id for e in flagged_emails]
 
-        # (b) Group into open loops via Claude
-        logger.info("Grouping emails into open loops...")
-        loops = _group_into_loops(emails)
+        # (a) Hard filter dismissed (safety net)
+        emails = _hard_filter_dismissed(flagged_emails) if flagged_emails else []
 
-        # (c) Priority matching on loops
+        # (b) Filter out already-accounted-for threads (incremental scanning)
+        accounted_ids = get_all_loop_thread_ids() | get_scanned_thread_ids()
+        last_scan = get_last_scan_time()
+
+        new_emails = []
+        for e in emails:
+            if e.thread_id in get_all_loop_thread_ids():
+                # Already in a loop (open or dismissed) — skip
+                continue
+            if e.thread_id in get_scanned_thread_ids():
+                # Was scanned before but not in a loop — re-evaluate if new activity
+                if last_scan:
+                    try:
+                        scan_dt = datetime.fromisoformat(last_scan)
+                        if scan_dt.tzinfo is None:
+                            scan_dt = scan_dt.replace(tzinfo=timezone.utc)
+                        if e.date > scan_dt:
+                            new_emails.append(e)  # new activity in old thread
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+                continue  # no new activity, skip
+            new_emails.append(e)  # genuinely new thread
+
+        skipped = len(emails) - len(new_emails)
+        if skipped:
+            logger.info(f"Incremental filter: skipped {skipped} already-accounted-for threads")
+
+        # (c) Group only NEW emails into loops
+        if new_emails:
+            logger.info(f"Grouping {len(new_emails)} new emails into loops...")
+            loops = _group_into_loops(new_emails)
+        else:
+            logger.info("No new emails to group — using existing loops")
+            loops = get_open_loops()
+
+        # (d) Update scan state
+        update_after_scan(scan_timestamp, all_scanned_ids, get_all_loop_thread_ids())
+
+        # (e) Priority matching on ALL open loops
         loops = _priority_match_loops(loops, priorities)
 
-        # (d) Cap loops
+        # (f) Cap loops
         loops, overflow_note = _cap_loops(loops)
 
-        # (e) Format loops by priority
+        # (g) Format loops by priority
         emails_xml = _group_loops_by_priority(loops)
 
-        # (f) Follow-up logic on loops
+        # (h) Follow-up logic on loops
         emails_xml = _apply_follow_up_to_loops(loops, emails_xml)
 
-        logger.info(f"Pre-processing complete: {len(loops)} loops, {len(meetings)} meetings")
+        logger.info(f"Pre-processing complete: {len(loops)} loops ({len(new_emails)} new emails), {len(meetings)} meetings")
     else:
-        emails_xml = "None — inbox looks clean." if ENABLE_EMAIL else ""
+        emails_xml = ""
         overflow_note = ""
         logger.info(f"Pre-processing complete: no emails, {len(meetings)} meetings")
 
@@ -640,10 +681,15 @@ async def run_daily_digest(local_now: datetime = None):
         digest_type, meetings = _get_digest_type_and_calendar(local_now)
         logger.info(f"Digest type: {digest_type} ({local_now.strftime('%A')}), {len(meetings)} meetings")
 
-        # 1. Scan emails (if enabled)
+        # 1. Scan emails (if enabled) — incremental when possible
         if ENABLE_EMAIL:
-            logger.info("Scanning inbox...")
-            flagged_emails = scan_inbox()
+            last_scan = get_last_scan_time()
+            if last_scan:
+                logger.info(f"Incremental scan since {last_scan[:19]}")
+                flagged_emails = scan_inbox(after_timestamp=last_scan)
+            else:
+                logger.info("First run — full 14-day backfill scan")
+                flagged_emails = scan_inbox()
             logger.info(f"Found {len(flagged_emails)} flagged emails")
         else:
             logger.info("Email scanning disabled — calendar-only mode")

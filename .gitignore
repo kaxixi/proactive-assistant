@@ -5,6 +5,8 @@ preferences.json
 memory.json
 open_loops.json
 interactions.json
+digest_loops.json
+scan_state.json
 __pycache__/
 *.pyc
 venv/
