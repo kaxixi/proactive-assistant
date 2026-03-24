@@ -28,7 +28,26 @@ _last_interaction_time: float = 0
 _thread_cache: dict[str, str] = {}
 
 # Numbered loop references from latest digest (number → loop_id)
-_digest_loops: dict[int, str] = {}
+# Persisted to disk so the bot process can read mappings created by the scheduler process
+import json as _json
+import os as _os
+_DIGEST_LOOPS_FILE = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "digest_loops.json")
+
+
+def _save_digest_loops(loops_map: dict[int, str]):
+    with open(_DIGEST_LOOPS_FILE, "w") as f:
+        _json.dump(loops_map, f)
+
+
+def _load_digest_loops() -> dict[int, str]:
+    if not _os.path.exists(_DIGEST_LOOPS_FILE):
+        return {}
+    try:
+        with open(_DIGEST_LOOPS_FILE) as f:
+            data = _json.load(f)
+        return {int(k): v for k, v in data.items()}
+    except (ValueError, _json.JSONDecodeError):
+        return {}
 
 # Tool definitions for Claude
 _BASE_TOOLS = [
@@ -309,12 +328,14 @@ def _build_system_prompt(extra_instructions: str = "") -> str:
     if memory_context:
         memory_section = f"\n<memory>\n{memory_context}\n</memory>\n"
 
-    # Build numbered loop reference for the system prompt
+    # Build numbered loop reference for the system prompt (read from disk —
+    # the mapping is written by the scheduler process, read by the bot process)
     loop_ref = ""
-    if _digest_loops:
+    digest_loops = _load_digest_loops()
+    if digest_loops:
         from open_loops import get_loop_by_id
         ref_lines = []
-        for num, lid in sorted(_digest_loops.items()):
+        for num, lid in sorted(digest_loops.items()):
             loop = get_loop_by_id(lid)
             if loop:
                 ref_lines.append(f"  #{num} = \"{loop.title}\" (loop_id: {lid})")
@@ -366,6 +387,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Commands:\n"
         "/status — check if all services are connected\n"
         "/digest — trigger a digest right now\n"
+        "/loops — show current open email loops\n"
         "/search <query> — search Drive and Dropbox\n"
         "/availability [this/next week] — show free meeting slots\n"
         "/morningavailability [this/next week] — morning slots only\n"
@@ -669,6 +691,39 @@ Additional instructions for document handling:
         )
 
 
+async def cmd_loops(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current open loops dashboard."""
+    if not _is_authorized(update):
+        return
+    from open_loops import get_open_loops
+
+    loops = get_open_loops()
+    if not loops:
+        await update.message.reply_text("No open loops — inbox looks clean!")
+        return
+
+    urgency_order = {"high": 0, "medium": 1, "low": 2}
+    loops.sort(key=lambda l: (urgency_order.get(l.urgency, 2), -l.age_days))
+
+    # Update the number→loop_id mapping so subsequent messages use these numbers
+    loops_map = {}
+    urgency_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}
+    lines = [f"📬 Open loops ({len(loops)}):\n"]
+    for i, loop in enumerate(loops, 1):
+        loops_map[i] = loop.loop_id
+        emoji = urgency_emoji.get(loop.urgency, "⚪")
+        senders = ", ".join(loop.senders[:2])
+        snooze = " ⏰" if loop.snoozed_until else ""
+        lines.append(
+            f"#{i} {emoji} **{loop.title}**{snooze}\n"
+            f"   {loop.age_days}d old · {len(loop.thread_ids)} thread(s) · {senders}"
+        )
+    _save_digest_loops(loops_map)
+
+    lines.append(f"\nReply to dismiss: \"1 handled\", \"3 snooze\", etc.")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def send_message(text: str, include_buttons: bool = False):
     """Send a message to the configured chat (used by scheduler)."""
     global _last_digest, _thread_cache
@@ -691,9 +746,10 @@ async def send_message(text: str, include_buttons: bool = False):
                 loops = get_open_loops()
                 urgency_order = {"high": 0, "medium": 1, "low": 2}
                 loops.sort(key=lambda l: (urgency_order.get(l.urgency, 2), -l.age_days))
-                _digest_loops.clear()
+                loops_map = {}
                 for i, loop in enumerate(loops[:15], 1):
-                    _digest_loops[i] = loop.loop_id
+                    loops_map[i] = loop.loop_id
+                _save_digest_loops(loops_map)
             except Exception as e:
                 logger.warning(f"Failed to build loop references: {e}")
 
@@ -727,6 +783,7 @@ def run_bot():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("search", cmd_search))
+    app.add_handler(CommandHandler("loops", cmd_loops))
     app.add_handler(CommandHandler("availability", cmd_availability))
     app.add_handler(CommandHandler("morningavailability", cmd_morningavailability))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
