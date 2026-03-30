@@ -1,17 +1,60 @@
 # Claudette — Proactive Personal Assistant
 
-A daily automation system that monitors your Gmail inbox and Google Calendar, generates a natural-language digest using Claude, and delivers it via Telegram. It learns your preferences over time and adapts to your timezone automatically.
+A daily automation system that monitors your Google Calendar (and optionally Gmail inbox), generates a natural-language digest using Claude, and delivers it via Telegram. It learns your preferences over time and adapts to your timezone automatically.
+
+## Installation modes
+
+Claudette supports two installation modes:
+
+- **Calendar-only** (`ENABLE_EMAIL=false`) — Morning calendar digests, availability commands, and interactive chat. No Gmail access needed. Great for users who want a lightweight calendar assistant.
+- **Full mode** (`ENABLE_EMAIL=true`, default) — Everything above plus Gmail inbox monitoring, email importance scoring, thread dismissals, and email search. Requires Gmail API access.
+
+You can start with calendar-only and enable email later by setting `ENABLE_EMAIL=true` in your `.env` and re-running the Google OAuth flow to grant Gmail permissions.
 
 ## What it does
 
-- **Morning digest** — Scans your inbox for emails you might be dropping (unreplied, aging, needs follow-up), lists upcoming meetings, cross-references against your current priorities, and sends you a prioritized summary each morning via Telegram. Three modes:
-  - **Weekday (Mon–Fri)**: Today + tomorrow, urgent actions
+- **Morning digest** — Lists upcoming meetings, highlights non-recurring events needing prep, and (in full mode) scans your inbox for emails you might be dropping. Three modes:
+  - **Weekday (Mon–Fri)**: Today + tomorrow calendar, plus urgent email actions (full mode)
   - **Saturday**: Weekend overview + "if you have time" items from the week
   - **Sunday**: Full week-ahead planning — highlights non-recurring meetings, upcoming deadlines, and sets the tone for the week. Includes weekly memory review
-- **Interactive bot** — Reply to any message with questions or feedback. Search Gmail, Google Drive, and Dropbox by chatting naturally
-- **Persistent memory** — Remembers key facts across conversations: pending tasks, resolved items, who people are, and what you've told it. Say "Capital One is handled" and it won't come up again
-- **Learning system** — Give feedback ("don't flag newsletters from X") and it learns lasting preferences
+- **Interactive bot** — Reply to any message with questions or feedback. Search Google Drive and Dropbox by chatting naturally. In full mode, also search Gmail and dismiss email threads
+- **Persistent memory** — Remembers key facts across conversations: pending tasks, resolved items, who people are, and what you've told it
+- **Learning system** — Give feedback and it learns lasting preferences
 - **Timezone-aware** — Reads your Google Calendar timezone setting. Travel to a new timezone, update your calendar, and the digest follows you
+
+## What it looks like
+
+<!-- To add a screenshot: save a Telegram screenshot as docs/digest-example.png and uncomment: -->
+<!-- ![Example digest in Telegram](docs/digest-example.png) -->
+
+Here's an example weekday morning digest:
+
+```
+📅 Today (Tuesday):
+• 10:00 AM — Lab meeting (recurring)
+• 2:00 PM — ⚡ ONE-TIME: Grant review with Sarah Chen — needs prep
+  (5 attendees). Want me to pull up the proposal draft?
+
+📅 Tomorrow:
+• 9:00 AM — Faculty seminar (recurring)
+• 3:30 PM — ⚡ ONE-TIME: Coffee with visiting speaker Dr. Liu
+
+📬 Emails needing attention:
+
+🔴 High priority:
+• Arjun's LOR request (4 days, unreplied) — connects to your
+  "Arjun LOR" priority. Suggest: draft a reply this morning.
+• Department chair re: curriculum committee (3 days) — Suggest:
+  quick reply confirming attendance.
+
+🟡 Medium:
+• Conference submission confirmation from SPSP (6 days) — Suggest:
+  archive, no action needed.
+
+All other items look handled. Have a good Tuesday! ☕
+```
+
+You interact with it by replying in Telegram: "Arjun's letter is done" and Claudette dismisses it, remembers it's resolved, and won't bring it up again.
 
 ## Architecture
 
@@ -23,7 +66,7 @@ calendar_digest.py    — Google Calendar: meetings, prep flags, timezone detect
 analyzer.py           — Claude API: generates the natural language digest
 priorities.py         — Fetches a published priorities list (e.g., Simplenote URL)
 memory.py             — Episodic memory: extracts and stores key facts from every interaction
-preferences.py        — Learning system: rules, sender prefs, dismissed threads, feedback log
+preferences.py        — Learning system: dismissed threads (preferences now in memory.py)
 drive_search.py       — Google Drive file search
 dropbox_search.py     — Dropbox file search
 google_auth.py        — Shared Google OAuth2 (Gmail, Calendar, Drive)
@@ -33,6 +76,8 @@ config.py             — Loads all config from .env
 ## Setup Guide
 
 This guide is designed so that you can hand it to Claude Code (`claude` CLI) and it will walk you through each step interactively. Or follow it manually.
+
+> **First question Claude should ask:** "Would you like calendar-only mode (lighter setup, no Gmail access needed) or full mode (calendar + email monitoring)?" Set `ENABLE_EMAIL=false` in `.env` for calendar-only, or leave as `true` (default) for full mode.
 
 ### Prerequisites
 
@@ -63,9 +108,9 @@ pip install -r requirements.txt
 1. Go to [Google Cloud Console](https://console.cloud.google.com)
 2. Create a new project (or use an existing one)
 3. Enable these APIs:
-   - Gmail API
-   - Google Calendar API
-   - Google Drive API
+   - Google Calendar API *(required)*
+   - Google Drive API *(required)*
+   - Gmail API *(only if using full mode with `ENABLE_EMAIL=true`)*
 4. Go to **APIs & Services → Credentials**
 5. Click **Create Credentials → OAuth client ID**
    - Application type: **Desktop app**
@@ -89,6 +134,7 @@ Edit `.env` and fill in your values:
 | `CLAUDE_MODEL` | No | Defaults to `claude-sonnet-4-20250514` |
 | `DIGEST_HOUR` | No | Hour to send digest (default: 5, meaning 5 AM) |
 | `DIGEST_MINUTE` | No | Minute to send digest (default: 30) |
+| `ENABLE_EMAIL` | No | Set to `false` for calendar-only mode (default: `true`) |
 
 ### Step 5: Authorize Google APIs
 
@@ -99,7 +145,9 @@ source venv/bin/activate
 python3 -c "from google_auth import get_credentials; get_credentials()"
 ```
 
-A browser window will open asking you to authorize Gmail, Calendar, and Drive access. After approving, a `token.json` file is created automatically.
+A browser window will open asking you to authorize access. In calendar-only mode (`ENABLE_EMAIL=false`), it requests Calendar and Drive permissions. In full mode, it also requests Gmail read access. After approving, a `token.json` file is created automatically.
+
+> **Switching modes later:** If you start with calendar-only and later enable email, delete `token.json` and re-run the auth command to get the additional Gmail permission.
 
 ### Step 6: Test locally
 
@@ -258,7 +306,9 @@ gcloud compute ssh claudette --zone=us-central1-a --command='sudo systemctl rest
 | `/status` | Check which services are connected |
 | `/digest` | Trigger a digest immediately |
 | `/search <query>` | Search Google Drive and Dropbox |
-| *(ask about an email)* | Searches Gmail automatically via Claude tool use |
+| `/availability [this/next week]` | Show free meeting slots |
+| `/morningavailability [this/next week]` | Morning slots only |
+| *(ask about an email)* | Searches Gmail automatically via Claude tool use *(full mode only)* |
 | *(free text)* | Chat naturally — ask questions, give feedback, request file searches |
 | *(file attachment)* | Send a text file and Claudette will read and discuss it |
 
@@ -276,7 +326,7 @@ After every conversation and every digest, a second Claude call extracts key fac
 | `resolved` | 14 days | "Capital One payment issue handled" |
 | `fact` | 60 days | "Gassiraro appointment rescheduled to late March" |
 | `relationship` | Never | "Desiree Plata is a collaborator on the Universal Climate course" |
-| `preference` | Never | Graduates to preferences.json rules |
+| `preference` | Never | "Always flag emails from Desiree as high priority" |
 
 These memories are loaded into both bot and digest prompts with tiered priority: pending items first, then recent facts, then relationships, then historical summaries.
 
@@ -290,21 +340,11 @@ To stay bounded over decades of use, memories automatically roll up into summari
 
 Relationships and preferences are never compacted. After 10 years, the memory store stays at ~130 entries (~30-50 KB) instead of growing unboundedly.
 
-### Preferences and thread dismissals (`preferences.json`)
+### Preferences and thread dismissals
 
-When you tell Claudette an email is handled ("Cap One is dealt with"), the bot dismisses the Gmail thread by ID. Dismissed threads aren't hard-filtered — instead, the dismissed context (subject + reason) is passed into the digest prompt so Claude can use judgment. If a new Capital One email arrives, Claude decides: "is this the same payment issue he already handled, or a genuinely new problem?" Same issue gets skipped; new issue gets flagged.
+Lasting preferences (e.g., "Always flag emails from Desiree as high priority") are stored as `preference` type memories in `memory.json` — the same system that handles all other learned knowledge. They never expire and are loaded into every digest and bot prompt.
 
-Dismissed threads auto-expire after 30 days. Lasting preference rules are extracted from feedback and applied to all future digests:
-
-```json
-{
-  "rules": ["Always flag emails from Desiree Plata as high priority"],
-  "senders_always_flag": ["important-person@example.com"],
-  "senders_never_flag": ["noreply@vercel.com"],
-  "dismissed_threads": [],
-  "feedback_log": []
-}
-```
+Thread dismissals are stored in `preferences.json`. When you tell Claudette an email is handled ("Cap One is dealt with"), the bot dismisses the Gmail thread by ID. Dismissed threads aren't hard-filtered — instead, the dismissed context (subject + reason) is passed into the digest prompt so Claude can use judgment. Dismissed threads auto-expire after 30 days.
 
 ## License
 

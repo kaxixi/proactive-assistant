@@ -1,19 +1,23 @@
 """Google OAuth2 authentication — shared by Gmail and Calendar modules."""
 
 import os
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+
+from config import ENABLE_EMAIL
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_FILE = os.path.join(PROJECT_DIR, "credentials.json")
 TOKEN_FILE = os.path.join(PROJECT_DIR, "token.json")
 
 SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
+if ENABLE_EMAIL:
+    SCOPES.insert(0, "https://www.googleapis.com/auth/gmail.readonly")
 
 
 def get_credentials() -> Credentials:
@@ -24,8 +28,13 @@ def get_credentials() -> Credentials:
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except RefreshError:
+                # Token revoked or expired beyond refresh — need full re-auth
+                os.remove(TOKEN_FILE)
+                creds = None
+        if not creds or not creds.valid:
             if not os.path.exists(CREDENTIALS_FILE):
                 raise FileNotFoundError(
                     f"Missing {CREDENTIALS_FILE} — download it from Google Cloud Console"

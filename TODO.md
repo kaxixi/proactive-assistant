@@ -5,6 +5,7 @@
 - [ ] Handle Dropbox token refresh (short-lived tokens expire; switch to OAuth refresh flow)
 
 ## Medium Priority
+- [ ] Google OAuth app verification — tokens expire every 7 days because app is unverified. Go through Google review process for long-lived tokens.
 - [ ] Smarter follow-up detection — lower urgency if a meeting is already scheduled with that person
 - [ ] Google Drive integration into digest — find relevant docs before meetings that need prep
 - [ ] Conversation memory — maintain context across multiple messages in a session (not just last digest)

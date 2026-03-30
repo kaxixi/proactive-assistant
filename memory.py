@@ -8,6 +8,7 @@ Relationships and preferences are never compacted or expired.
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -288,8 +289,71 @@ def migrate_rules_to_memories():
         logger.warning(f"Rule migration failed (non-fatal): {e}")
 
 
+def _extract_event_date(content: str, created_at: str) -> datetime | None:
+    """Try to extract a specific event date from a memory's content.
+
+    Returns the date as a datetime if found, else None.
+    Handles patterns like "March 20", "on 3/09", "Friday March 21 at 9:30 AM",
+    and relative words like "today" / "tomorrow" (resolved against created_at).
+    """
+    created = datetime.fromisoformat(created_at)
+    year = created.year
+
+    # "today" / "tomorrow" relative to when the memory was created
+    lower = content.lower()
+    if "today" in lower:
+        return created.replace(hour=23, minute=59, second=59)
+    if "tomorrow" in lower:
+        return (created + timedelta(days=1)).replace(hour=23, minute=59, second=59)
+
+    # "March 20" or "March 21 at 9:30 AM" — full month name + day
+    month_names = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    m = re.search(
+        r'\b(' + '|'.join(month_names) + r')\s+(\d{1,2})\b',
+        content, re.IGNORECASE,
+    )
+    if m:
+        month = month_names[m.group(1).lower()]
+        day = int(m.group(2))
+        try:
+            return datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+    # "on 3/09" or "3/20/2026" — numeric month/day
+    m = re.search(r'\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b', content)
+    if m:
+        month, day = int(m.group(1)), int(m.group(2))
+        yr = int(m.group(3)) if m.group(3) else year
+        if yr < 100:
+            yr += 2000
+        try:
+            return datetime(yr, month, day, 23, 59, 59, tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+    return None
+
+
+def _is_past_event(mem: dict, now: datetime, grace_hours: int = 24) -> bool:
+    """Check if a fact memory refers to an event that's more than grace_hours in the past."""
+    if mem.get("type") != "fact":
+        return False
+    event_date = _extract_event_date(mem["content"], mem.get("created_at", now.isoformat()))
+    if event_date is None:
+        return False
+    return now > event_date + timedelta(hours=grace_hours)
+
+
 def get_active_memories() -> list[dict]:
-    """Return non-expired individual memories, pruning expired ones."""
+    """Return non-expired individual memories, pruning expired ones.
+
+    Also prunes fact memories about events whose date has passed (24h grace).
+    """
     data = load_memories()
     now = datetime.now(timezone.utc)
     active = []
@@ -299,6 +363,10 @@ def get_active_memories() -> list[dict]:
         expires = mem.get("expires_at")
         if expires and datetime.fromisoformat(expires) < now:
             pruned = True
+            continue
+        if _is_past_event(mem, now):
+            pruned = True
+            logger.info(f"Auto-expired past event: {mem['content'][:80]}")
             continue
         active.append(mem)
 
@@ -697,10 +765,11 @@ def compact_memories():
     # Stage 3: monthly → yearly (completed years only)
     _compact_to_yearly(data, now)
 
-    # Prune expired individual memories
+    # Prune expired individual memories and past events
     data["memories"] = [
         m for m in data["memories"]
-        if not m.get("expires_at") or datetime.fromisoformat(m["expires_at"]) > now
+        if (not m.get("expires_at") or datetime.fromisoformat(m["expires_at"]) > now)
+        and not _is_past_event(m, now)
     ]
 
     data["last_compaction"] = now.isoformat()

@@ -744,7 +744,7 @@ async def run_daily_digest(local_now: datetime = None):
                 logger.info("Running weekly memory review (Sunday)...")
                 review = generate_memory_review()
                 if review:
-                    await send_message(f"🧠 Weekly memory check-in:\n\n{review}")
+                    await send_message(f"🧠 Weekly memory check-in:\n\n{review}", label="memory_review")
                 mark_review_done()
             except Exception as e:
                 logger.warning(f"Memory review failed (non-fatal): {e}")

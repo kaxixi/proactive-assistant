@@ -16,8 +16,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Store recent digest so replies have context
-_last_digest = None
+import json as _json
+import os as _os
+
+# Persisted to disk so the bot process can read state created by the scheduler process
+_PROJECT_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_DIGEST_LOOPS_FILE = _os.path.join(_PROJECT_DIR, "digest_loops.json")
+_LAST_MESSAGES_FILE = _os.path.join(_PROJECT_DIR, "last_scheduler_messages.json")
 
 # Multi-turn conversation state
 _conversation_history: list[dict] = []
@@ -26,12 +31,6 @@ _last_interaction_time: float = 0
 
 # Cache for fetched full threads (cleared on new digest)
 _thread_cache: dict[str, str] = {}
-
-# Numbered loop references from latest digest (number → loop_id)
-# Persisted to disk so the bot process can read mappings created by the scheduler process
-import json as _json
-import os as _os
-_DIGEST_LOOPS_FILE = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "digest_loops.json")
 
 
 def _save_digest_loops(loops_map: dict[int, str]):
@@ -48,6 +47,30 @@ def _load_digest_loops() -> dict[int, str]:
         return {int(k): v for k, v in data.items()}
     except (ValueError, _json.JSONDecodeError):
         return {}
+
+
+def _save_scheduler_message(text: str, label: str = "digest"):
+    """Persist a message sent by the scheduler so the bot can include it as context.
+
+    Keeps the last 3 messages (newest first) to cover digest + review + any extras.
+    """
+    messages = _load_scheduler_messages()
+    import time as _time
+    messages.insert(0, {"label": label, "text": text, "ts": _time.time()})
+    messages = messages[:3]  # keep last 3
+    with open(_LAST_MESSAGES_FILE, "w") as f:
+        _json.dump(messages, f)
+
+
+def _load_scheduler_messages() -> list[dict]:
+    """Load recent scheduler messages from disk."""
+    if not _os.path.exists(_LAST_MESSAGES_FILE):
+        return []
+    try:
+        with open(_LAST_MESSAGES_FILE) as f:
+            return _json.load(f)
+    except (ValueError, _json.JSONDecodeError):
+        return []
 
 # Tool definitions for Claude
 _BASE_TOOLS = [
@@ -318,9 +341,15 @@ def _build_system_prompt(extra_instructions: str = "") -> str:
     pref_memories = get_preference_memories()
     rules_text = "\n".join(f"- {m['content']}" for m in pref_memories) or "None yet"
 
+    # Inject recent scheduler messages (digest, memory review, etc.) so the bot
+    # has context when the user replies to them.
     digest_section = ""
-    if _last_digest:
-        digest_section = f"\n<last_digest>\n{_last_digest}\n</last_digest>\n"
+    scheduler_msgs = _load_scheduler_messages()
+    if scheduler_msgs:
+        parts = []
+        for msg in scheduler_msgs:
+            parts.append(f"<scheduler_message label=\"{msg['label']}\">\n{msg['text']}\n</scheduler_message>")
+        digest_section = "\n" + "\n".join(parts) + "\n"
 
     from memory import get_memories_for_prompt
     memory_context = get_memories_for_prompt()
@@ -724,10 +753,10 @@ async def cmd_loops(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
-async def send_message(text: str, include_buttons: bool = False):
+async def send_message(text: str, include_buttons: bool = False, label: str = "digest"):
     """Send a message to the configured chat (used by scheduler)."""
-    global _last_digest, _thread_cache
-    _last_digest = text
+    global _thread_cache
+    _save_scheduler_message(text, label=label)
     _thread_cache = {}  # clear cache on new digest
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     async with bot:
