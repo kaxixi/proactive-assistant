@@ -48,6 +48,7 @@ All learned knowledge lives in `memory.json`. The system learns from digest extr
 
 ### Hygiene
 - Per-type expiry (see table above)
+- Date-aware expiry: fact memories with specific dates (e.g., "March 20", "today") auto-expire 24h after the event
 - Tag-based dedup: same type + overlapping tags → replace old with new, don't duplicate
 - Hard caps per type (preferences: 30, relationships: 40, facts: 50, resolved: 40, etc.)
 - Compaction: facts/resolved/summaries roll up weekly → monthly → yearly
@@ -127,7 +128,8 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - **Batch Gmail API** — threads fetched in batches of 20 for ~5x speedup
 - **Incremental scanning** — only process new emails since last scan. Open loops are the persistent source of truth. Dismissed threads never re-processed.
 - **Loop-based dismissals** — dismissing a topic closes the loop (all member threads), clears follow-up memories, creates resolved memory. Legacy per-thread dismissals in preferences.json still work as fallback.
-- **OAuth token on VM** — token.json must be generated locally (browser required) then copied to VM
+- **Scheduler→bot context bridge** — scheduler and bot are separate processes. `last_scheduler_messages.json` persists the last 3 scheduler messages (digests, memory reviews) so the bot has context when the user replies. `digest_loops.json` maps loop numbers to IDs.
+- **OAuth token on VM** — token.json must be generated locally (browser required) then copied to VM. Tokens expire every 7 days (unverified app). `google_auth.py` catches RefreshError and deletes stale token instead of crashing.
 - **Timezone-aware scheduling** — timer fires every 3h, Python checks Google Calendar timezone. No hardcoded timezone.
 
 ## Deployment
@@ -157,4 +159,4 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 
 ## Sensitive files (never commit)
 - .env, credentials.json, token.json, preferences.json, memory.json, open_loops.json
-- scan_state.json, interactions.json, digest_loops.json
+- scan_state.json, interactions.json, digest_loops.json, last_scheduler_messages.json
