@@ -140,13 +140,15 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 ## Development workflow
 1. Edit files locally in `/Users/erez/Documents/proactive-assistant/`
 2. Test locally: `source venv/bin/activate && python3 scheduler.py --force`
-3. Deploy to VM:
+3. Commit and push: `git push origin main`
+4. Deploy to VM:
    ```
    export PATH="/opt/homebrew/share/google-cloud-sdk/bin:$PATH"
-   gcloud compute scp --zone=us-central1-a <files> claudette:~/proactive-assistant/
-   gcloud compute ssh claudette --zone=us-central1-a --command='sudo systemctl restart claudette-bot.service'
+   gcloud compute ssh claudette --zone=us-central1-a --command='cd ~/proactive-assistant && git pull origin main && sudo systemctl restart claudette-bot.service'
    ```
-4. Check logs: `gcloud compute ssh claudette --zone=us-central1-a --command='sudo journalctl -u claudette-bot.service --since "10 minutes ago" --no-pager'`
+5. Check logs: `gcloud compute ssh claudette --zone=us-central1-a --command='sudo journalctl -u claudette-bot.service --since "10 minutes ago" --no-pager'`
+
+Note: The VM repo is connected to GitHub. Sensitive files (.env, token.json, etc.) are gitignored and live only on the VM. To update those, use `gcloud compute scp`.
 
 ## GitHub repo
 - Public repo: https://github.com/kaxixi/proactive-assistant
