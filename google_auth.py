@@ -35,6 +35,14 @@ def get_credentials() -> Credentials:
                 os.remove(TOKEN_FILE)
                 creds = None
         if not creds or not creds.valid:
+            # On the VM, services run under systemd — no browser available.
+            # Detect this and give a clear error instead of crashing.
+            if os.environ.get("INVOCATION_ID") or os.environ.get("JOURNAL_STREAM"):
+                raise RuntimeError(
+                    "Google token expired — re-generate locally and scp to VM:\n"
+                    "  python3 -c \"from google_auth import get_credentials; get_credentials()\"\n"
+                    f"  gcloud compute scp --zone=us-central1-a {TOKEN_FILE} claudette:~/proactive-assistant/"
+                )
             if not os.path.exists(CREDENTIALS_FILE):
                 raise FileNotFoundError(
                     f"Missing {CREDENTIALS_FILE} — download it from Google Cloud Console"
