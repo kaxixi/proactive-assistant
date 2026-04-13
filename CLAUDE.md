@@ -101,7 +101,8 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - Dismissed loop thread IDs are permanently filtered from future scans
 
 ## Bot commands
-- `/start`, `/help` — show available commands
+- `/start` — welcome message + command list
+- `/commands`, `/help` — show command list only (source of truth: `_COMMANDS_TEXT` in bot.py)
 - `/status` — check service connections
 - `/digest` — trigger a digest right now
 - `/loops` — show open loops dashboard with numbered list
