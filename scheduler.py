@@ -681,6 +681,19 @@ async def run_daily_digest(local_now: datetime = None):
         digest_type, meetings = _get_digest_type_and_calendar(local_now)
         logger.info(f"Digest type: {digest_type} ({local_now.strftime('%A')}), {len(meetings)} meetings")
 
+        # Warn if Google OAuth refresh token is nearing its 7-day expiry (unverified app limit)
+        from google_auth import token_age_days
+        age = token_age_days()
+        if age is not None and age >= 6:
+            hours_left = max(0, int((7 - age) * 24))
+            await send_message(
+                f"🔑 Google token expires in ~{hours_left}h. To refresh, run locally:\n"
+                f"  cd ~/Documents/proactive-assistant && source venv/bin/activate\n"
+                f"  rm token.json && python3 -c \"from google_auth import get_credentials; get_credentials()\"\n"
+                f"  gcloud compute scp --zone=us-central1-a token.json claudette:~/proactive-assistant/",
+                label="token_warning",
+            )
+
         # 1. Scan emails (if enabled) — incremental when possible
         if ENABLE_EMAIL:
             last_scan = get_last_scan_time()

@@ -20,6 +20,18 @@ if ENABLE_EMAIL:
     SCOPES.insert(0, "https://www.googleapis.com/auth/gmail.readonly")
 
 
+def token_age_days() -> float | None:
+    """Return how many days since token.json was last regenerated, or None if missing.
+
+    Used to warn before the 7-day refresh-token expiry on unverified OAuth apps.
+    """
+    if not os.path.exists(TOKEN_FILE):
+        return None
+    import time
+    age_seconds = time.time() - os.path.getmtime(TOKEN_FILE)
+    return age_seconds / 86400
+
+
 def get_credentials() -> Credentials:
     """Return valid Google credentials, prompting OAuth flow if needed."""
     creds = None
