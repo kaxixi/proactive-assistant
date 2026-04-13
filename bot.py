@@ -408,25 +408,34 @@ Instructions:
     return system_prompt
 
 
+_COMMANDS_TEXT = (
+    "Commands:\n"
+    "/digest — generate a digest right now\n"
+    "/loops — list your open email loops (numbered)\n"
+    "/availability [this/next week] — show free meeting slots\n"
+    "/morningavailability [this/next week] — morning slots only\n"
+    "/search <query> — search Drive and Dropbox\n"
+    "/status — check which services are connected\n"
+    "/commands — show this list\n"
+    "/help — same as /commands\n\n"
+    "You can also just reply to any message with feedback or questions."
+)
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     mode = "inbox and calendar" if ENABLE_EMAIL else "calendar"
-    commands = (
-        "Commands:\n"
-        "/status — check if all services are connected\n"
-        "/digest — trigger a digest right now\n"
-        "/loops — show current open email loops\n"
-        "/search <query> — search Drive and Dropbox\n"
-        "/availability [this/next week] — show free meeting slots\n"
-        "/morningavailability [this/next week] — morning slots only\n"
-        "/help — show this message\n\n"
-        "You can also just reply to any message with feedback or questions!"
-    )
     await update.message.reply_text(
         f"Hey! I'm Claudette, your proactive assistant. I'll send you daily "
-        f"digests about your {mode}.\n\n{commands}"
+        f"digests about your {mode}.\n\n{_COMMANDS_TEXT}"
     )
+
+
+async def cmd_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(_COMMANDS_TEXT)
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -808,7 +817,8 @@ def run_bot():
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_commands))
+    app.add_handler(CommandHandler("commands", cmd_commands))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("search", cmd_search))
