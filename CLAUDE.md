@@ -129,7 +129,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - **Incremental scanning** — only process new emails since last scan. Open loops are the persistent source of truth. Dismissed threads never re-processed.
 - **Loop-based dismissals** — dismissing a topic closes the loop (all member threads), clears follow-up memories, creates resolved memory. Legacy per-thread dismissals in preferences.json still work as fallback.
 - **Scheduler→bot context bridge** — scheduler and bot are separate processes. `last_scheduler_messages.json` persists the last 3 scheduler messages (digests, memory reviews) so the bot has context when the user replies. `digest_loops.json` maps loop numbers to IDs.
-- **OAuth token on VM** — token.json must be generated locally (browser required) then copied to VM. Tokens expire every 7 days (unverified app). `google_auth.py` catches RefreshError and deletes stale token instead of crashing.
+- **OAuth token on VM** — token.json must be generated locally (browser required) then copied to VM. Tokens expire every 7 days (unverified app). `google_auth.py` catches RefreshError and deletes stale token instead of crashing; also detects headless systemd environment and raises a clear error instead of trying to open a browser. Scheduler sends a Telegram warning starting on day 6 with the exact refresh commands.
 - **Timezone-aware scheduling** — timer fires every 3h, Python checks Google Calendar timezone. No hardcoded timezone.
 
 ## Deployment

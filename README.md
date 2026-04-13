@@ -149,6 +149,8 @@ A browser window will open asking you to authorize access. In calendar-only mode
 
 > **Switching modes later:** If you start with calendar-only and later enable email, delete `token.json` and re-run the auth command to get the additional Gmail permission.
 
+> **Token expiry (unverified apps):** Google revokes refresh tokens after 7 days for unverified OAuth apps. Claudette will send a Telegram warning starting on day 6 with the exact commands to refresh. To avoid the weekly cycle entirely, go through Google's app verification process (or use a Google Workspace "Internal" app if available).
+
 ### Step 6: Test locally
 
 ```bash
