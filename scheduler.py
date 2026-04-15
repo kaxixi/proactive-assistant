@@ -15,7 +15,7 @@ import anthropic
 from open_loops import get_dismissed_context_text
 from priorities import fetch_priorities
 from memory import (
-    get_memories_for_prompt, extract_and_store, compact_memories,
+    get_memories_for_prompt, extract_and_store,
     generate_memory_review, mark_review_done,
     get_active_memories,
 )
@@ -895,11 +895,15 @@ async def run_daily_digest(local_now: datetime = None):
         except Exception as e:
             logger.warning(f"Memory extraction from digest failed (non-fatal): {e}")
 
-        # 7. Run memory compaction if needed
+        # 7. Per-section hygiene (memory compaction + caps, loop expiry,
+        # rule retirement, audit trim). state.prune() orchestrates; each
+        # module owns what stale means for its slice.
         try:
-            compact_memories()
+            import state as _state
+            report = _state.prune()
+            logger.info(f"State prune: {report}")
         except Exception as e:
-            logger.warning(f"Memory compaction failed (non-fatal): {e}")
+            logger.warning(f"State prune failed (non-fatal): {e}")
 
         # 8. Sunday: memory review + housekeeping
         if digest_type == "week_ahead":

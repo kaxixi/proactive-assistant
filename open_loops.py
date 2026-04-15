@@ -56,22 +56,44 @@ def save_loops(loops: list[OpenLoop]):
     state.set_section("loops", [asdict(loop) for loop in loops])
 
 
-EXPIRY_DAYS = 30  # loops expire after 30 days without activity
+OPEN_EXPIRY_DAYS = 30       # open loops expire after 30 days without activity
+DISMISSED_RETENTION_DAYS = 90  # dismissed loops kept 90 days for pattern detection
+# Backwards-compat alias for anything importing the old name
+EXPIRY_DAYS = OPEN_EXPIRY_DAYS
 
 
 def _is_expired(loop: OpenLoop) -> bool:
-    """Check if a loop has expired based on updated_at or dismissed_at."""
+    """Check whether a loop should be dropped from the store.
+
+    Open loops age out after OPEN_EXPIRY_DAYS of inactivity (measured
+    from updated_at). Dismissed loops are kept for
+    DISMISSED_RETENTION_DAYS so pattern detection and digest
+    context formatting can reference them.
+    """
     now = datetime.now(timezone.utc)
     try:
         if loop.status == "dismissed" and loop.dismissed_at:
             ref = datetime.fromisoformat(loop.dismissed_at)
+            cutoff = DISMISSED_RETENTION_DAYS
         else:
             ref = datetime.fromisoformat(loop.updated_at)
+            cutoff = OPEN_EXPIRY_DAYS
         if ref.tzinfo is None:
             ref = ref.replace(tzinfo=timezone.utc)
-        return (now - ref).days >= EXPIRY_DAYS
+        return (now - ref).days >= cutoff
     except (ValueError, TypeError):
         return False
+
+
+def prune() -> dict:
+    """Drop loops that have aged past their retention window. See
+    `_is_expired` for the split between open (30d) and dismissed (90d)."""
+    loops = load_loops()
+    kept = [l for l in loops if not _is_expired(l)]
+    dropped = len(loops) - len(kept)
+    if dropped:
+        save_loops(kept)
+    return {"loops_dropped": dropped, "loops_kept": len(kept)}
 
 
 def loop_age_days(loop: OpenLoop) -> int:

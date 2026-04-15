@@ -28,6 +28,27 @@ def _save_interactions(events: list[dict]):
     state.set_section("audit", events)
 
 
+AUDIT_RETENTION_DAYS = 90
+AUDIT_MAX_ENTRIES = 2000
+
+
+def prune() -> dict:
+    """Apply the audit-log retention rules from the unified-state plan:
+    drop entries older than AUDIT_RETENTION_DAYS; if still over
+    AUDIT_MAX_ENTRIES, keep the most recent AUDIT_MAX_ENTRIES."""
+    events = _load_interactions()
+    before = len(events)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=AUDIT_RETENTION_DAYS)).isoformat()
+    events = [e for e in events if e.get("timestamp", "") > cutoff]
+    if len(events) > AUDIT_MAX_ENTRIES:
+        events.sort(key=lambda e: e.get("timestamp", ""))
+        events = events[-AUDIT_MAX_ENTRIES:]
+    dropped = before - len(events)
+    if dropped:
+        _save_interactions(events)
+    return {"audit_dropped": dropped, "audit_kept": len(events)}
+
+
 def record_interaction(event: InteractionEvent):
     """Record a user interaction event."""
     events = _load_interactions()

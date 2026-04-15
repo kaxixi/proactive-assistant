@@ -296,6 +296,57 @@ def get_unconfirmed_rules() -> list[dict]:
     return out
 
 
+RULE_IDLE_RETIREMENT_DAYS = 180  # drop rules unfired for 6 months
+RULE_PER_KIND_CAP = 50           # hard cap per kind; oldest-fired evicted first
+
+
+def prune() -> dict:
+    """Retire rules that haven't fired in RULE_IDLE_RETIREMENT_DAYS, and
+    enforce RULE_PER_KIND_CAP per bucket. Never evicts an unfired rule
+    that's younger than the idle threshold — new rules get a fair shot."""
+    section = _rules_section()
+    now = datetime.now(timezone.utc)
+    idle_dropped = 0
+    cap_dropped = 0
+
+    for kind, bucket in section.items():
+        kept = []
+        for rule in bucket:
+            last = rule.get("last_fired_at")
+            created = rule.get("created_at")
+            ref_str = last or created
+            if ref_str:
+                try:
+                    ref = datetime.fromisoformat(ref_str)
+                    if ref.tzinfo is None:
+                        ref = ref.replace(tzinfo=timezone.utc)
+                    if (now - ref).days >= RULE_IDLE_RETIREMENT_DAYS:
+                        idle_dropped += 1
+                        logger.info(
+                            f"Retiring idle {kind} rule {rule.get('id')} "
+                            f"(unfired for {(now - ref).days}d)"
+                        )
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            kept.append(rule)
+
+        if len(kept) > RULE_PER_KIND_CAP:
+            # Evict oldest-fired (or oldest-created if never fired) first
+            def _age(rule):
+                return rule.get("last_fired_at") or rule.get("created_at") or ""
+            kept.sort(key=_age)
+            over = len(kept) - RULE_PER_KIND_CAP
+            cap_dropped += over
+            logger.info(f"Per-kind cap pruned {over} oldest {kind} rule(s)")
+            kept = kept[over:]
+        section[kind] = kept
+
+    if idle_dropped or cap_dropped:
+        state.set_section("rules", section)
+    return {"rules_idle_dropped": idle_dropped, "rules_cap_dropped": cap_dropped}
+
+
 def confirm_rule(rule_id: str) -> dict | None:
     """Flip a rule to confirmed. Returns the rule dict or None if missing."""
     section = _rules_section()

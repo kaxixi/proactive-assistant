@@ -766,6 +766,33 @@ def _compact_to_yearly(data: dict, now: datetime):
             logger.warning(f"Yearly compaction failed for {year}: {e}")
 
 
+def prune() -> dict:
+    """Per-section hygiene owned by the memory module.
+
+    Runs the hierarchical compaction, drops expired individual memories,
+    and enforces per-type hard caps. Returns a dict of counters for the
+    state-layer prune to aggregate into a single summary line.
+    """
+    data = load_memories()
+    now = datetime.now(timezone.utc)
+    before = len(data["memories"])
+
+    # Expiry + past-event pruning
+    data["memories"] = [
+        m for m in data["memories"]
+        if (not m.get("expires_at") or datetime.fromisoformat(m["expires_at"]) > now)
+        and not _is_past_event(m, now)
+    ]
+    expired = before - len(data["memories"])
+
+    # Hard caps (oldest-first eviction)
+    _enforce_type_caps(data)
+    save_memories(data)
+
+    compact_memories()
+    return {"memories_expired": expired, "memories_kept": len(data["memories"])}
+
+
 def compact_memories():
     """Hierarchical memory compaction: individual → weekly → monthly → yearly."""
     data = load_memories()

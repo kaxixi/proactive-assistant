@@ -600,6 +600,7 @@ _COMMANDS_TEXT = (
     "/loopcleanup — auto-close loops you've already engaged with in Gmail\n"
     "/memoryreview — review stored memories for stale or contradictory entries\n"
     "/rules — list structured rules (ingestion filters etc.)\n"
+    "/state — show per-section counts in state.json\n"
     "/availability [this/next week] — show free meeting slots\n"
     "/morningavailability [this/next week] — morning slots only\n"
     "/search <query> — search Drive and Dropbox\n"
@@ -663,6 +664,23 @@ async def cmd_loopcleanup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     await update.message.reply_text(_format_auto_close_summary(closed))
+
+
+async def cmd_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Print per-section counts from state.json so growth anomalies are spottable."""
+    if not _is_authorized(update):
+        return
+    import os, state as _state
+    counts = _state.section_counts()
+    try:
+        size_kb = os.path.getsize(_state.STATE_FILE) / 1024
+        size_str = f"{size_kb:.1f} KB"
+    except OSError:
+        size_str = "?"
+    lines = [f"🗃️ state.json — {size_str}"]
+    for key in sorted(counts):
+        lines.append(f"  {key}: {counts[key]}")
+    await update.message.reply_text("\n".join(lines))
 
 
 async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1098,6 +1116,7 @@ def run_bot():
     app.add_handler(CommandHandler("loopcleanup", cmd_loopcleanup))
     app.add_handler(CommandHandler("memoryreview", cmd_memoryreview))
     app.add_handler(CommandHandler("rules", cmd_rules))
+    app.add_handler(CommandHandler("state", cmd_state))
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("loops", cmd_loops))
     app.add_handler(CommandHandler("availability", cmd_availability))

@@ -289,12 +289,46 @@ def set_section(name: str, value: Any):
 # The unified plan will centralize these here over time.
 # ---------------------------------------------------------------------------
 
-def prune():
-    """Placeholder for future centralized hygiene.
+def prune() -> dict:
+    """Run every section's hygiene pass and return an aggregated report.
 
-    Per-section pruning is still owned by the individual modules today
-    (memory caps, loop expiry, scan-state 500-ID cap). Step 1 leaves that
-    behavior untouched — this function just exists so future steps can
-    wire in centralized cleanup without churning callers.
+    Each module owns the knowledge of what's stale for its concern:
+      - memory.prune(): TTL, caps, hierarchical compaction
+      - open_loops.prune(): 30d inactivity for open, 90d retention for dismissed
+      - rules.prune(): 6-month idle retirement, per-kind cap
+      - interaction_tracker.prune(): 90d audit retention, 2000-entry cap
+
+    Called at the end of the digest (daily) so growth stays bounded.
+    Non-fatal: individual failures don't block other sections from pruning.
     """
-    return None
+    report: dict = {}
+    from importlib import import_module
+
+    for module_name in ("memory", "open_loops", "rules", "interaction_tracker"):
+        try:
+            mod = import_module(module_name)
+            sub = mod.prune()
+            if isinstance(sub, dict):
+                report.update(sub)
+        except Exception as e:
+            logger.warning(f"{module_name}.prune() failed: {e}")
+            report[f"{module_name}_error"] = str(e)
+    return report
+
+
+def section_counts() -> dict:
+    """Snapshot of per-section sizes — used by the /state visibility command."""
+    s = load_state()
+    return {
+        "memories": len(s.get("narrative", {}).get("memories", [])),
+        "weekly_summaries": len(s.get("narrative", {}).get("summaries", {}).get("weekly", [])),
+        "monthly_summaries": len(s.get("narrative", {}).get("summaries", {}).get("monthly", [])),
+        "yearly_summaries": len(s.get("narrative", {}).get("summaries", {}).get("yearly", [])),
+        "loops_open": sum(1 for l in s.get("loops", []) if l.get("status") == "open"),
+        "loops_dismissed": sum(1 for l in s.get("loops", []) if l.get("status") == "dismissed"),
+        "rules_ingestion": len(s.get("rules", {}).get("ingestion", [])),
+        "rules_closure": len(s.get("rules", {}).get("closure", [])),
+        "rules_priority": len(s.get("rules", {}).get("priority", [])),
+        "audit_entries": len(s.get("audit", [])),
+        "scanned_thread_ids": len(s.get("pipeline", {}).get("scanned_thread_ids", [])),
+    }

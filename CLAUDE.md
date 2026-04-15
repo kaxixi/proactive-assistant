@@ -29,7 +29,7 @@ There is no test suite in this repo; verify changes by running `scheduler.py --f
 - **drive_search.py** / **dropbox_search.py** — File search for Google Drive and Dropbox.
 - **google_auth.py** — Shared Google OAuth2. Scopes conditional: Calendar+Drive always, Gmail only when ENABLE_EMAIL=true.
 - **config.py** — Loads config from .env. Includes DIGEST_HOUR/DIGEST_MINUTE/ENABLE_EMAIL/CLAUDE_MODEL.
-- **state.py** — Unified state store. All persistent state (memories, loops, preferences, scan state, digest loop numbers, scheduler-message context, audit log) lives in a single `state.json`, written atomically (`.tmp` → fsync → rename) with 3 rolling backups. The per-domain modules (memory.py, open_loops.py, etc.) read/write slices of this object via `state.get_section(name)` / `state.set_section(name, value)`. On first boot, `state.py` migrates from the legacy per-file JSONs and deletes them. Plan: see `docs/unified-state-plan.md`.
+- **state.py** — Unified state store. All persistent state (memories, loops, rules, scan state, digest loop numbers, scheduler-message context, audit log) lives in a single `state.json`, written atomically (`.tmp` → fsync → rename) with 3 rolling backups and an flock that serializes writes across the scheduler and bot processes. The per-domain modules (memory.py, open_loops.py, etc.) read/write slices via `state.get_section(name)` / `state.set_section(name, value)`. `state.prune()` orchestrates per-section hygiene (each module owns a `prune()` that handles its own TTL / caps); it runs at the end of every digest. `state.section_counts()` powers the `/state` command. See `docs/unified-state-plan.md`.
 
 ## Memory & learning system
 
@@ -119,6 +119,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - `/digest` — trigger a digest right now
 - `/memoryreview` — trigger a memory review on demand (normally runs Sundays)
 - `/rules` — list structured rules (ingestion filters etc.)
+- `/state` — show per-section counts in state.json (useful for spotting growth anomalies)
 - `/loops` — show open loops dashboard with numbered list
 - `/loopcleanup` — re-check every open loop against Gmail and auto-close the ones Erez has engaged with. A loop is closed only when every one of its threads is "settled": Erez sent at least one message in the thread AND the thread is either out of the inbox or he sent the latest message. Archive alone is NOT enough — a thread where Erez never replied isn't handled just because it left the inbox. Runs automatically at the start of every digest; use `/loopcleanup` on demand when the backlog looks stale.
 - `/search <query>` — search Drive and Dropbox

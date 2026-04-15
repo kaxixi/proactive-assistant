@@ -311,6 +311,7 @@ gcloud compute ssh claudette --zone=us-central1-a --command='sudo systemctl rest
 | `/loopcleanup` | Auto-close open loops you've already engaged with in Gmail |
 | `/memoryreview` | Run a memory review on demand (normally Sundays) |
 | `/rules` | List structured rules (ingestion filters etc.) |
+| `/state` | Show per-section counts in state.json |
 | `/search <query>` | Search Google Drive and Dropbox |
 | `/availability [this/next week]` | Show free meeting slots |
 | `/morningavailability [this/next week]` | Morning slots only |
