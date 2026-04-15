@@ -858,7 +858,32 @@ async def run_daily_digest(local_now: datetime = None):
             overflow_note=processed["overflow_note"],
         )
 
-        # 5. Send via Telegram. Auto-closed loops already logged + reflected in
+        # 5. Append any dry-run rule fires captured since the last digest.
+        # These are the first N matches of unconfirmed rules, so Erez can
+        # verify the rule is doing the right thing and confirm/revert.
+        try:
+            from rules import pop_dry_run_fires
+            fires = pop_dry_run_fires()
+            if fires:
+                by_rule: dict[str, list[str]] = {}
+                for f in fires:
+                    by_rule.setdefault(f["rule_id"], []).append(f.get("context", ""))
+                rule_lines = []
+                for rid, contexts in by_rule.items():
+                    rule_lines.append(
+                        f"  • rule {rid}: {len(contexts)} match(es) — e.g. "
+                        + "; ".join(contexts[:2])
+                    )
+                footer = (
+                    "\n\n—\n📐 Unconfirmed rule(s) fired this scan. "
+                    "Reply 'confirm <id>' to keep or 'delete <id>' to revert:\n"
+                    + "\n".join(rule_lines)
+                )
+                digest = digest.rstrip() + footer
+        except Exception as e:
+            logger.warning(f"Dry-run footer skipped: {e}")
+
+        # 6. Send via Telegram. Auto-closed loops already logged + reflected in
         # the loop count; the footer made the digest too long to skim, so it
         # lives on in /loopcleanup output only.
         await send_message(digest, include_buttons=True)

@@ -23,7 +23,7 @@ There is no test suite in this repo; verify changes by running `scheduler.py --f
 - **calendar_digest.py** — Fetches meetings, flags non-recurring events and prep needs. Exposes `get_user_timezone()` and `get_meetings_for_range()`.
 - **priorities.py** — Fetches a published priorities list (URL configurable via PRIORITIES_URL env var).
 - **availability.py** — Computes free meeting slots. Supports `/availability` and `/morningavailability` commands with flexible date parsing.
-- **rules.py** — Structured ingestion/closure/priority rules stored under `state.rules.*`. Used by the ingestion pipeline to deterministically skip or always-flag senders (replacing the old `senders_never_flag` / `senders_always_flag` lists). Each rule tracks a `source_memory_id` so rules disappear automatically when their source memory is removed.
+- **rules.py** — Structured ingestion/closure/priority rules stored under `state.rules.*`. Used by the ingestion pipeline to deterministically skip or always-flag senders (replacing the old `senders_never_flag` / `senders_always_flag` lists). Each rule tracks a `source_memory_id` so rules disappear automatically when their source memory is forgotten. When a new `preference` memory looks like a filter statement ("Skip all emails from X", "Always flag Y"), `compile_preference_to_rule` turns it into an unconfirmed rule operating in dry-run for 3 matches. The bot surfaces unconfirmed rules via `<unconfirmed_rules>` in the system prompt and offers `confirm_rule` / `delete_rule` tools; dry-run fires are aggregated into a single digest footer so Erez sees what the new rule actually caught.
 - **scan_state.py** — Tracks incremental email scanning progress (last scan timestamp, seen thread IDs).
 - **interaction_tracker.py** — Records button presses and loop interactions, detects behavioral patterns for auto-deprioritization suggestions.
 - **drive_search.py** / **dropbox_search.py** — File search for Google Drive and Dropbox.
@@ -118,6 +118,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - `/status` — check service connections
 - `/digest` — trigger a digest right now
 - `/memoryreview` — trigger a memory review on demand (normally runs Sundays)
+- `/rules` — list structured rules (ingestion filters etc.)
 - `/loops` — show open loops dashboard with numbered list
 - `/loopcleanup` — re-check every open loop against Gmail and auto-close the ones Erez has engaged with. A loop is closed only when every one of its threads is "settled": Erez sent at least one message in the thread AND the thread is either out of the inbox or he sent the latest message. Archive alone is NOT enough — a thread where Erez never replied isn't handled just because it left the inbox. Runs automatically at the start of every digest; use `/loopcleanup` on demand when the backlog looks stale.
 - `/search <query>` — search Drive and Dropbox

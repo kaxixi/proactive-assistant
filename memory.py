@@ -131,18 +131,28 @@ def forget_memories(query: str, types: list[str] | None = None) -> tuple[int, li
         return 0, []
     q = query.strip().lower()
     data = load_memories()
-    keep, removed = [], []
+    keep, removed, removed_ids = [], [], set()
     for m in data["memories"]:
         match_type = (types is None) or (m.get("type") in types)
         match_text = q in (m.get("content") or "").lower()
         if match_type and match_text:
             removed.append(m["content"])
+            removed_ids.add(m["id"])
         else:
             keep.append(m)
     if removed:
         data["memories"] = keep
         save_memories(data)
         logger.info(f"Forgot {len(removed)} memories matching '{query}' (types={types})")
+        # Cascade: drop any rules compiled from the forgotten memories so we
+        # don't leave orphaned rules pointing at vanished source memories.
+        try:
+            from rules import remove_rules_by_source_memory
+            dropped = remove_rules_by_source_memory(removed_ids)
+            if dropped:
+                logger.info(f"Also dropped {dropped} rule(s) sourced from forgotten memories")
+        except Exception as e:
+            logger.warning(f"Rule cascade-delete failed (non-fatal): {e}")
     return len(removed), removed[:5]
 
 
@@ -183,10 +193,16 @@ def add_memories(new_memories: list[dict]):
     about the same topic (matched by overlapping tags).
 
     Enforces per-type hard caps — oldest memories pruned when exceeded.
+
+    When a genuinely new `preference` memory is added from a user-feedback
+    source (not migration, not a dedup replacement), it is passed to
+    `rules.compile_preference_to_rule` which may turn it into a structured
+    ingestion rule.
     """
     data = load_memories()
     existing_contents = {m["content"] for m in data["memories"]}
     now = datetime.now(timezone.utc)
+    compile_queue: list[tuple[str, str]] = []  # (memory_id, content)
 
     for mem in new_memories:
         if mem["content"] in existing_contents:
@@ -229,8 +245,9 @@ def add_memories(new_memories: list[dict]):
                 existing_contents.add(mem["content"])
                 continue
 
+        new_id = str(uuid.uuid4())
         data["memories"].append({
-            "id": str(uuid.uuid4()),
+            "id": new_id,
             "type": mem_type,
             "content": mem["content"],
             "source": mem.get("source", "bot"),
@@ -240,10 +257,26 @@ def add_memories(new_memories: list[dict]):
         })
         existing_contents.add(mem["content"])
 
+        # Queue genuinely-new preference memories for rule compilation.
+        # Skip migrated memories — those are the pre-existing preference
+        # strings that seeded the system, not fresh user corrections.
+        if mem_type == "preference" and mem.get("source") != "migrated_rule":
+            compile_queue.append((new_id, mem["content"]))
+
     # Enforce per-type hard caps — prune oldest when exceeded
     _enforce_type_caps(data)
 
     save_memories(data)
+
+    # Post-save: try to compile each new preference into a structured rule.
+    # Non-fatal — compilation failures don't affect memory writes.
+    if compile_queue:
+        try:
+            from rules import compile_preference_to_rule
+            for mem_id, content in compile_queue:
+                compile_preference_to_rule(content, source_memory_id=mem_id)
+        except Exception as e:
+            logger.warning(f"Rule compilation hook failed (non-fatal): {e}")
 
 
 def _enforce_type_caps(data: dict):

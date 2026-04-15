@@ -68,6 +68,35 @@ def _load_scheduler_messages() -> list[dict]:
 # Tool definitions for Claude
 _BASE_TOOLS = [
     {
+        "name": "confirm_rule",
+        "description": (
+            "Confirm an unconfirmed structured rule (listed in <unconfirmed_rules>). "
+            "Use when Erez approves a rule compiled from his recent feedback. "
+            "Flips the rule to confirmed; future matches are silent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string", "description": "The rule id, e.g. 'r_abc123'."},
+            },
+            "required": ["rule_id"],
+        },
+    },
+    {
+        "name": "delete_rule",
+        "description": (
+            "Delete a structured rule by id. Use when Erez rejects an "
+            "unconfirmed rule or asks to remove an existing one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string", "description": "The rule id to remove."},
+            },
+            "required": ["rule_id"],
+        },
+    },
+    {
         "name": "forget_memory",
         "description": (
             "Delete stored memory entries whose content matches the query "
@@ -434,6 +463,22 @@ def _execute_tool(tool_name: str, tool_input: dict) -> str:
             )
         elif tool_name == "dismiss_email":
             return _dismiss_email(tool_input["query"], tool_input["reason"])
+        elif tool_name == "confirm_rule":
+            from rules import confirm_rule as _confirm_rule, describe_rule
+            rule = _confirm_rule(tool_input["rule_id"])
+            return (
+                f"Confirmed: {describe_rule(rule)}"
+                if rule
+                else f"No rule found with id {tool_input['rule_id']}."
+            )
+        elif tool_name == "delete_rule":
+            from rules import remove_rule
+            ok = remove_rule(tool_input["rule_id"])
+            return (
+                f"Deleted rule {tool_input['rule_id']}."
+                if ok
+                else f"No rule found with id {tool_input['rule_id']}."
+            )
         elif tool_name == "forget_memory":
             from memory import forget_memories
             count, sample = forget_memories(
@@ -496,6 +541,18 @@ def _build_system_prompt(extra_instructions: str = "") -> str:
         if ref_lines:
             loop_ref = "\n<digest_loop_numbers>\n" + "\n".join(ref_lines) + "\n</digest_loop_numbers>\n"
 
+    # Surface unconfirmed rules so Claude can ask Erez to confirm them or
+    # act on a confirmation/revert reply in the natural course of conversation.
+    rules_ref = ""
+    try:
+        from rules import get_unconfirmed_rules, describe_rule
+        unconfirmed = get_unconfirmed_rules()
+        if unconfirmed:
+            lines = [f"  {r['id']}: {describe_rule(r)}" for r in unconfirmed]
+            rules_ref = "\n<unconfirmed_rules>\n" + "\n".join(lines) + "\n</unconfirmed_rules>\n"
+    except Exception:
+        pass
+
     if ENABLE_EMAIL:
         dismiss_instructions = """- When Erez says something is handled, resolved, done, taken care of, or not relevant — IMMEDIATELY dismiss the matching loop(s). Without dismissing, the item will reappear in future digests; Erez may not remember he already dealt with it and might accidentally re-send an email or re-do work he's already completed.
   - If Erez references loops by NUMBER (e.g., "1 handled", "dismiss 3 and 5", "resolve 2, 4, 6, 9, 10"): use the dismiss_loops_by_number tool with the full list of numbers in a SINGLE call. Do NOT map numbers to titles and call dismiss_email — that path does fuzzy title matching and can drift onto the wrong loop.
@@ -518,7 +575,7 @@ You communicate via Telegram.
 <preferences>
 {rules_text}
 </preferences>
-{digest_section}{memory_section}{loop_ref}
+{digest_section}{memory_section}{loop_ref}{rules_ref}
 {tools_description}
 
 Instructions:
@@ -530,6 +587,7 @@ Instructions:
 - When Erez confirms cleanup of items raised in a memory review (stale facts, duplicates, contradictions, resolved follow-ups), use the forget_memory tool — NOT dismiss_email. Memory entries and email loops are different stores; dismiss_email only acts on loops.
 - Extract LASTING preference rules from his feedback. Return them on lines starting with "RULE:" — these will be saved automatically.
   IMPORTANT: Only create rules for truly PERMANENT preferences (e.g., "Desiree's emails are always important", "Skip all Vercel notifications"). Do NOT create rules for temporary situations like "remind me to reply to Tim" — those are follow_up memories, not rules. The memory extraction system handles follow_ups automatically.
+- If the prompt contains <unconfirmed_rules>, these are structured rules compiled from Erez's recent feedback that are operating in dry-run (the first few matches are logged). If Erez replies with confirmation ("yes", "keep", "good", "confirmed"), call confirm_rule with the rule id. If he rejects ("no", "revert", "delete", "undo", "that's wrong"), call delete_rule with the rule id. Mention the rule's match and action in your reply so he knows what he's confirming.
 {extra_instructions}"""
 
     return system_prompt
@@ -541,6 +599,7 @@ _COMMANDS_TEXT = (
     "/loops — list your open email loops (numbered)\n"
     "/loopcleanup — auto-close loops you've already engaged with in Gmail\n"
     "/memoryreview — review stored memories for stale or contradictory entries\n"
+    "/rules — list structured rules (ingestion filters etc.)\n"
     "/availability [this/next week] — show free meeting slots\n"
     "/morningavailability [this/next week] — morning slots only\n"
     "/search <query> — search Drive and Dropbox\n"
@@ -604,6 +663,20 @@ async def cmd_loopcleanup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     await update.message.reply_text(_format_auto_close_summary(closed))
+
+
+async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all structured rules currently in effect."""
+    if not _is_authorized(update):
+        return
+    from rules import list_rules_text
+    text = list_rules_text()
+    preamble = (
+        "📐 Structured rules (ingestion / closure / priority).\n"
+        "Reply 'confirm <id>' to confirm, 'delete <id>' to remove — or "
+        "just say 'yes' / 'no' if there's a single unconfirmed rule pending.\n\n"
+    )
+    await update.message.reply_text(preamble + text)
 
 
 async def cmd_memoryreview(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1024,6 +1097,7 @@ def run_bot():
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("loopcleanup", cmd_loopcleanup))
     app.add_handler(CommandHandler("memoryreview", cmd_memoryreview))
+    app.add_handler(CommandHandler("rules", cmd_rules))
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("loops", cmd_loops))
     app.add_handler(CommandHandler("availability", cmd_availability))

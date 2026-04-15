@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from googleapiclient.discovery import build
 
 from google_auth import get_credentials
-from rules import sender_never_flagged, sender_always_flagged
+from rules import sender_never_flagged, sender_always_flagged, note_fire
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +105,11 @@ def _is_automated_sender(email_addr: str) -> bool:
     """Check if sender is automated/noise.
 
     Combines the hard-coded automation patterns with user-defined
-    ingestion rules (action='skip')."""
-    if sender_never_flagged(email_addr):
+    ingestion rules (action='skip'). If a user rule matches, its
+    fire is recorded — so unconfirmed rules surface in the digest."""
+    matched_rule = sender_never_flagged(email_addr)
+    if matched_rule:
+        note_fire(matched_rule["id"], context=f"skipped sender {email_addr}")
         return True
     for pattern in AUTOMATED_SENDER_PATTERNS:
         if re.search(pattern, email_addr, re.IGNORECASE):
@@ -293,7 +296,10 @@ def scan_inbox(my_email: str = None, days_back: int = 14, after_timestamp: str =
 
         labels = last_msg.get("labelIds", [])
 
-        always_flag = sender_always_flagged(original_sender_email)
+        always_flag_rule = sender_always_flagged(original_sender_email)
+        always_flag = bool(always_flag_rule)
+        if always_flag_rule:
+            note_fire(always_flag_rule["id"], context=f"always-flagged sender {original_sender_email}")
 
         # Skip automated senders (unless in always-flag list)
         if not always_flag:
