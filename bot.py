@@ -778,7 +778,9 @@ async def cmd_loops(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _save_digest_loops(loops_map)
 
     lines.append(f"\nReply to dismiss: \"1 handled\", \"3 snooze\", etc.")
-    await update.message.reply_text("\n".join(lines))
+    text = "\n".join(lines)
+    for i in range(0, len(text), 4096):
+        await update.message.reply_text(text[i:i + 4096])
 
 
 async def send_message(text: str, include_buttons: bool = False, label: str = "digest"):
