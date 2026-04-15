@@ -1,16 +1,13 @@
 """Open loops — topic-level grouping of email threads for digest tracking."""
 
-import json
-import os
 import logging
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
 
-logger = logging.getLogger(__name__)
+import state
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-LOOPS_FILE = os.path.join(PROJECT_DIR, "open_loops.json")
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,22 +40,20 @@ def _now_iso() -> str:
 
 
 def load_loops() -> list[OpenLoop]:
-    """Load all loops from disk."""
-    if not os.path.exists(LOOPS_FILE):
-        return []
-    try:
-        with open(LOOPS_FILE) as f:
-            data = json.load(f)
-        return [OpenLoop(**entry) for entry in data]
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(f"Failed to load open_loops.json: {e}")
-        return []
+    """Load all loops from the unified state."""
+    data = state.get_section("loops") or []
+    loops = []
+    for entry in data:
+        try:
+            loops.append(OpenLoop(**entry))
+        except TypeError as e:
+            logger.warning(f"Skipping malformed loop entry: {e}")
+    return loops
 
 
 def save_loops(loops: list[OpenLoop]):
-    """Persist all loops to disk."""
-    with open(LOOPS_FILE, "w") as f:
-        json.dump([asdict(loop) for loop in loops], f, indent=2, default=str)
+    """Persist all loops to the unified state."""
+    state.set_section("loops", [asdict(loop) for loop in loops])
 
 
 EXPIRY_DAYS = 30  # loops expire after 30 days without activity

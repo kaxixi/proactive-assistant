@@ -1,12 +1,19 @@
 .env
 credentials.json
 token.json
+state.json
+state.json.bak.*
+state.json.tmp
+state.json.lock
+# Legacy files (now consolidated into state.json; kept here in case
+# migration is run again against an older checkout):
 preferences.json
 memory.json
 open_loops.json
 interactions.json
 digest_loops.json
 scan_state.json
+last_scheduler_messages.json
 __pycache__/
 *.pyc
 venv/

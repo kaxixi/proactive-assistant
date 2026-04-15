@@ -1,41 +1,32 @@
 """Scan state — tracks incremental email scanning progress."""
 
-import json
-import os
 import logging
-from datetime import datetime, timezone
+
+import state as _state
 
 logger = logging.getLogger(__name__)
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(PROJECT_DIR, "scan_state.json")
-
 
 def load_scan_state() -> dict:
-    """Load scan state from disk.
+    """Load the pipeline section of the unified state.
 
     Returns dict with keys:
         last_scan_at: str (ISO timestamp) or None
         scanned_thread_ids: list[str] — thread IDs seen but NOT in any loop
     """
-    if not os.path.exists(STATE_FILE):
-        return {"last_scan_at": None, "scanned_thread_ids": []}
-    try:
-        with open(STATE_FILE) as f:
-            data = json.load(f)
-        return {
-            "last_scan_at": data.get("last_scan_at"),
-            "scanned_thread_ids": data.get("scanned_thread_ids", []),
-        }
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(f"Failed to load scan_state.json: {e}")
-        return {"last_scan_at": None, "scanned_thread_ids": []}
+    section = _state.get_section("pipeline") or {}
+    return {
+        "last_scan_at": section.get("last_scan_at"),
+        "scanned_thread_ids": section.get("scanned_thread_ids", []),
+    }
 
 
-def save_scan_state(state: dict):
-    """Persist scan state to disk."""
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+def save_scan_state(data: dict):
+    """Persist the pipeline section of the unified state."""
+    _state.set_section("pipeline", {
+        "last_scan_at": data.get("last_scan_at"),
+        "scanned_thread_ids": data.get("scanned_thread_ids", []),
+    })
 
 
 def get_last_scan_time() -> str | None:

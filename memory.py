@@ -15,11 +15,11 @@ from datetime import datetime, timedelta, timezone
 import anthropic
 
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+import state
 
 logger = logging.getLogger(__name__)
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-MEMORY_FILE = os.path.join(PROJECT_DIR, "memory.json")
 
 # How long each memory type lasts before auto-expiry
 EXPIRY_DAYS = {
@@ -102,20 +102,19 @@ Rules:
 # ---------------------------------------------------------------------------
 
 def load_memories() -> dict:
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE) as f:
-            data = json.load(f)
-    else:
-        data = DEFAULT_MEMORY.copy()
-    # Migration: ensure summaries structure exists
+    """Load the narrative section of the unified state.
+
+    Returns a dict shaped {memories, summaries, last_compaction, last_review}
+    — the same shape memory.json had historically.
+    """
+    data = state.get_section("narrative") or DEFAULT_MEMORY.copy()
     if "summaries" not in data:
         data["summaries"] = {"weekly": [], "monthly": [], "yearly": []}
     return data
 
 
 def save_memories(data: dict):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(data, f, indent=2, default=str)
+    state.set_section("narrative", data)
 
 
 # ---------------------------------------------------------------------------

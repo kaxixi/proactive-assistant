@@ -29,10 +29,11 @@ There is no test suite in this repo; verify changes by running `scheduler.py --f
 - **drive_search.py** / **dropbox_search.py** — File search for Google Drive and Dropbox.
 - **google_auth.py** — Shared Google OAuth2. Scopes conditional: Calendar+Drive always, Gmail only when ENABLE_EMAIL=true.
 - **config.py** — Loads config from .env. Includes DIGEST_HOUR/DIGEST_MINUTE/ENABLE_EMAIL/CLAUDE_MODEL.
+- **state.py** — Unified state store. All persistent state (memories, loops, preferences, scan state, digest loop numbers, scheduler-message context, audit log) lives in a single `state.json`, written atomically (`.tmp` → fsync → rename) with 3 rolling backups. The per-domain modules (memory.py, open_loops.py, etc.) read/write slices of this object via `state.get_section(name)` / `state.set_section(name, value)`. On first boot, `state.py` migrates from the legacy per-file JSONs and deletes them. Plan: see `docs/unified-state-plan.md`.
 
 ## Memory & learning system
 
-All learned knowledge lives in `memory.json`. The system learns from digest extraction, bot conversations, and explicit user feedback.
+All learned knowledge lives in the `narrative` section of `state.json`. The system learns from digest extraction, bot conversations, and explicit user feedback.
 
 ### Memory types
 | Type | Expiry | Purpose |
@@ -174,5 +175,8 @@ Note: The VM repo is connected to GitHub. Sensitive files (.env, token.json, etc
 - New data sources: create a module, import in scheduler.py and/or bot.py
 
 ## Sensitive files (never commit)
-- .env, credentials.json, token.json, preferences.json, memory.json, open_loops.json
-- scan_state.json, interactions.json, digest_loops.json, last_scheduler_messages.json
+- .env, credentials.json, token.json
+- state.json (+ state.json.bak.*, state.json.tmp, state.json.lock) — unified state file
+- Legacy files (now consolidated but still gitignored in case an old checkout is migrated):
+  preferences.json, memory.json, open_loops.json, scan_state.json, interactions.json,
+  digest_loops.json, last_scheduler_messages.json

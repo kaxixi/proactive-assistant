@@ -16,13 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-import json as _json
-import os as _os
-
-# Persisted to disk so the bot process can read state created by the scheduler process
-_PROJECT_DIR = _os.path.dirname(_os.path.abspath(__file__))
-_DIGEST_LOOPS_FILE = _os.path.join(_PROJECT_DIR, "digest_loops.json")
-_LAST_MESSAGES_FILE = _os.path.join(_PROJECT_DIR, "last_scheduler_messages.json")
+import state as _state
 
 # Multi-turn conversation state
 _conversation_history: list[dict] = []
@@ -38,18 +32,18 @@ _thread_cache: dict[str, str] = {}
 
 
 def _save_digest_loops(loops_map: dict[int, str]):
-    with open(_DIGEST_LOOPS_FILE, "w") as f:
-        _json.dump(loops_map, f)
+    """Persist the digest's numbered-loop map for the bot to read back."""
+    session = _state.get_section("session") or {}
+    session["digest_loop_numbers"] = {str(k): v for k, v in loops_map.items()}
+    _state.set_section("session", session)
 
 
 def _load_digest_loops() -> dict[int, str]:
-    if not _os.path.exists(_DIGEST_LOOPS_FILE):
-        return {}
+    session = _state.get_section("session") or {}
+    numbers = session.get("digest_loop_numbers") or {}
     try:
-        with open(_DIGEST_LOOPS_FILE) as f:
-            data = _json.load(f)
-        return {int(k): v for k, v in data.items()}
-    except (ValueError, _json.JSONDecodeError):
+        return {int(k): v for k, v in numbers.items()}
+    except (ValueError, TypeError):
         return {}
 
 
@@ -58,23 +52,18 @@ def _save_scheduler_message(text: str, label: str = "digest"):
 
     Keeps the last 3 messages (newest first) to cover digest + review + any extras.
     """
-    messages = _load_scheduler_messages()
     import time as _time
+    session = _state.get_section("session") or {}
+    messages = session.get("last_scheduler_messages") or []
     messages.insert(0, {"label": label, "text": text, "ts": _time.time()})
-    messages = messages[:3]  # keep last 3
-    with open(_LAST_MESSAGES_FILE, "w") as f:
-        _json.dump(messages, f)
+    session["last_scheduler_messages"] = messages[:3]
+    _state.set_section("session", session)
 
 
 def _load_scheduler_messages() -> list[dict]:
-    """Load recent scheduler messages from disk."""
-    if not _os.path.exists(_LAST_MESSAGES_FILE):
-        return []
-    try:
-        with open(_LAST_MESSAGES_FILE) as f:
-            return _json.load(f)
-    except (ValueError, _json.JSONDecodeError):
-        return []
+    """Load recent scheduler messages from the unified state."""
+    session = _state.get_section("session") or {}
+    return session.get("last_scheduler_messages") or []
 
 # Tool definitions for Claude
 _BASE_TOOLS = [

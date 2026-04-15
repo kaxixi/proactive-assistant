@@ -858,9 +858,9 @@ async def run_daily_digest(local_now: datetime = None):
             overflow_note=processed["overflow_note"],
         )
 
-        # 5. Send via Telegram (with auto-close footer appended at the bottom)
-        if auto_closed:
-            digest = digest.rstrip() + "\n\n—\n" + _format_auto_close_summary(auto_closed)
+        # 5. Send via Telegram. Auto-closed loops already logged + reflected in
+        # the loop count; the footer made the digest too long to skim, so it
+        # lives on in /loopcleanup output only.
         await send_message(digest, include_buttons=True)
         logger.info("Daily digest sent successfully")
 

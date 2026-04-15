@@ -1,30 +1,27 @@
 """Learning system — stores and applies user feedback to improve future digests."""
 
-import json
-import os
 import logging
 from datetime import datetime, timezone
 
-logger = logging.getLogger(__name__)
+import state
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-PREFS_FILE = os.path.join(PROJECT_DIR, "preferences.json")
+logger = logging.getLogger(__name__)
 
 DEFAULT_PREFS = {
     "dismissed_threads": [],
+    "senders_always_flag": [],
+    "senders_never_flag": [],
+    "feedback_log": [],
+    "rules": [],
 }
 
 
 def load_preferences() -> dict:
-    if os.path.exists(PREFS_FILE):
-        with open(PREFS_FILE) as f:
-            return json.load(f)
-    return DEFAULT_PREFS.copy()
+    return state.get_section("preferences") or DEFAULT_PREFS.copy()
 
 
 def save_preferences(prefs: dict):
-    with open(PREFS_FILE, "w") as f:
-        json.dump(prefs, f, indent=2, default=str)
+    state.set_section("preferences", prefs)
 
 
 

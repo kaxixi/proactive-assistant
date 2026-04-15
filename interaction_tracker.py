@@ -1,16 +1,13 @@
 """Interaction tracking — records button presses and detects behavioral patterns."""
 
-import json
-import os
 import logging
 import hashlib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 
-logger = logging.getLogger(__name__)
+import state
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-INTERACTIONS_FILE = os.path.join(PROJECT_DIR, "interactions.json")
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,18 +21,11 @@ class InteractionEvent:
 
 
 def _load_interactions() -> list[dict]:
-    if not os.path.exists(INTERACTIONS_FILE):
-        return []
-    try:
-        with open(INTERACTIONS_FILE) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, TypeError):
-        return []
+    return state.get_section("audit") or []
 
 
 def _save_interactions(events: list[dict]):
-    with open(INTERACTIONS_FILE, "w") as f:
-        json.dump(events, f, indent=2, default=str)
+    state.set_section("audit", events)
 
 
 def record_interaction(event: InteractionEvent):
