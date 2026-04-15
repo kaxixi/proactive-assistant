@@ -831,12 +831,35 @@ async def send_message(text: str, include_buttons: bool = False, label: str = "d
                 logger.warning(f"Failed to send pattern suggestions: {e}")
 
 
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Surface unhandled command/message errors to the user instead of
+    failing silently. The default behavior of python-telegram-bot is to
+    log the traceback and drop the user's request, which is what made
+    /loops appear to "hang"."""
+    err = context.error
+    logger.exception("Handler raised an exception", exc_info=err)
+    try:
+        chat_id = None
+        if isinstance(update, Update):
+            if update.effective_chat:
+                chat_id = update.effective_chat.id
+            elif update.effective_message:
+                chat_id = update.effective_message.chat_id
+        if chat_id is None:
+            chat_id = TELEGRAM_CHAT_ID
+        msg = f"⚠️ Sorry, that request hit an error: {type(err).__name__}: {err}"
+        await context.bot.send_message(chat_id=chat_id, text=msg[:4000])
+    except Exception as report_err:
+        logger.warning(f"Failed to surface error to user: {report_err}")
+
+
 def run_bot():
     """Start the bot in long-polling mode (for interactive use)."""
     from memory import migrate_rules_to_memories
     migrate_rules_to_memories()
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_error_handler(_on_error)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_commands))
     app.add_handler(CommandHandler("commands", cmd_commands))
