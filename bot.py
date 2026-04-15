@@ -129,8 +129,37 @@ _EMAIL_TOOLS = [
         },
     },
     {
+        "name": "dismiss_loops_by_number",
+        "description": (
+            "Dismiss one or more open loops by their digest number (as shown in "
+            "<digest_loop_numbers>). ALWAYS use this tool — never dismiss_email — "
+            "when Erez references loops by number ('1 handled', 'dismiss 3 and 5', "
+            "'resolve 2, 4, 6'). Passes the numbers directly to the number→loop_id "
+            "map in session state, which avoids the fuzzy title matching that "
+            "dismiss_email does."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "numbers": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "The loop numbers to dismiss, e.g. [2, 3, 4, 6, 9, 10].",
+                },
+                "reason": {"type": "string", "description": "Why they're being dismissed (e.g. 'handled', 'not relevant', 'resolved')"},
+            },
+            "required": ["numbers", "reason"],
+        },
+    },
+    {
         "name": "dismiss_email",
-        "description": "Dismiss an email topic (open loop) so it won't appear in future digests. Dismisses all related threads at once. Use when Erez says he's handled an email, it's not relevant, the issue is resolved, or he doesn't need reminders about it. Search by sender name, subject keywords, or topic.",
+        "description": (
+            "Dismiss an email topic (open loop) by a free-text query. Use ONLY "
+            "when Erez refers to a topic by name rather than by number — e.g. "
+            "'Cap One is handled' or 'dismiss the Walmart thing'. If Erez gives "
+            "a NUMBER from the digest, use dismiss_loops_by_number instead. "
+            "Falls back to Gmail search for items not in the current loop set."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -185,6 +214,65 @@ def _search_gmail(query: str, max_results: int = 5) -> str:
         lines.append(f"From: {sender}\nSubject: {subject}\nDate: {date}\n{snippet}\n")
 
     return "\n---\n".join(lines)
+
+
+def _dismiss_loops_by_number(numbers: list[int], reason: str) -> str:
+    """Dismiss loops referenced by their digest number.
+
+    Reads the number→loop_id map from session state (written by the
+    scheduler or by /loops), then dismisses each loop directly — no
+    fuzzy matching, no chance of drift across similarly-titled loops.
+    """
+    from memory import add_memories
+    from open_loops import dismiss_loop as dismiss_loop_fn, get_loop_by_id
+
+    digest_loops = _load_digest_loops()
+    if not digest_loops:
+        return (
+            "I don't have a current loop-number map. Run /loops first to "
+            "refresh the numbering, then try again."
+        )
+
+    dismissed_titles: list[str] = []
+    missing: list[int] = []
+    already_closed: list[int] = []
+
+    for num in numbers:
+        loop_id = digest_loops.get(int(num))
+        if not loop_id:
+            missing.append(num)
+            continue
+        target = get_loop_by_id(loop_id)
+        if not target or target.status == "dismissed":
+            already_closed.append(num)
+            continue
+        dismissed = dismiss_loop_fn(loop_id, reason)
+        if not dismissed:
+            missing.append(num)
+            continue
+        dismissed_titles.append(f"#{num} \"{dismissed.title}\"")
+        tags = list(dismissed.tags) if dismissed.tags else []
+        add_memories([{
+            "type": "resolved",
+            "content": f"Dismissed loop \"{dismissed.title}\" ({len(dismissed.thread_ids)} threads) — reason: {reason}",
+            "tags": tags,
+            "source": "dismiss",
+        }])
+
+    parts = []
+    if dismissed_titles:
+        parts.append(
+            f"Dismissed {len(dismissed_titles)} loop(s) (reason: {reason}):\n"
+            + "\n".join(f"  • {t}" for t in dismissed_titles)
+        )
+    if already_closed:
+        parts.append(f"Already closed: {', '.join(f'#{n}' for n in already_closed)}")
+    if missing:
+        parts.append(
+            f"No loop matched these numbers: {', '.join(f'#{n}' for n in missing)}. "
+            "Run /loops to refresh the numbering."
+        )
+    return "\n\n".join(parts) if parts else "No loops dismissed."
 
 
 def _dismiss_email(query: str, reason: str) -> str:
@@ -340,6 +428,10 @@ def _execute_tool(tool_name: str, tool_input: dict) -> str:
             return format_dropbox_results(files)
         elif tool_name == "search_gmail":
             return _search_gmail(tool_input["query"])
+        elif tool_name == "dismiss_loops_by_number":
+            return _dismiss_loops_by_number(
+                tool_input["numbers"], tool_input["reason"],
+            )
         elif tool_name == "dismiss_email":
             return _dismiss_email(tool_input["query"], tool_input["reason"])
         elif tool_name == "forget_memory":
@@ -405,13 +497,14 @@ def _build_system_prompt(extra_instructions: str = "") -> str:
             loop_ref = "\n<digest_loop_numbers>\n" + "\n".join(ref_lines) + "\n</digest_loop_numbers>\n"
 
     if ENABLE_EMAIL:
-        dismiss_instructions = """- When Erez says something is handled, resolved, done, taken care of, or not relevant — IMMEDIATELY use the dismiss_email tool. This dismisses the matching open loop and all its related email threads at once.
-  Without dismissing, the item will reappear in future digests. Erez may not remember he already dealt with it, and might accidentally re-send an email or re-do work he's already completed.
-  - Erez may reference loops by NUMBER (e.g., "1 handled", "dismiss 3 and 5", "tell me more about 2"). Use the <digest_loop_numbers> section to map numbers to loop titles, then use the dismiss_email tool with the loop title as the query.
-  Examples of when to dismiss:
-  - "1 handled" → find loop #1's title, dismiss with reason "handled"
-  - "1 and 3 handled" → dismiss both loops
-  - "That's handled" → dismiss with reason "handled"
+        dismiss_instructions = """- When Erez says something is handled, resolved, done, taken care of, or not relevant — IMMEDIATELY dismiss the matching loop(s). Without dismissing, the item will reappear in future digests; Erez may not remember he already dealt with it and might accidentally re-send an email or re-do work he's already completed.
+  - If Erez references loops by NUMBER (e.g., "1 handled", "dismiss 3 and 5", "resolve 2, 4, 6, 9, 10"): use the dismiss_loops_by_number tool with the full list of numbers in a SINGLE call. Do NOT map numbers to titles and call dismiss_email — that path does fuzzy title matching and can drift onto the wrong loop.
+  - If Erez references a loop by free text ("Cap One is done", "dismiss the Walmart thing"): use dismiss_email with a descriptive query.
+  Examples:
+  - "1 handled" → dismiss_loops_by_number(numbers=[1], reason="handled")
+  - "1 and 3 handled" → dismiss_loops_by_number(numbers=[1, 3], reason="handled")
+  - "Resolve 2, 4, 6, 9" → dismiss_loops_by_number(numbers=[2, 4, 6, 9], reason="resolved")
+  - "Cap One is handled" → dismiss_email(query="Cap One", reason="handled")
   - "Not relevant" / "Don't need that" → dismiss with reason "not relevant"
   When in doubt about whether Erez means to dismiss, dismiss it. It's better to dismiss and have him re-flag than to keep nagging about handled items."""
         tools_description = "You have tools to search Gmail, Google Drive, and Dropbox, to dismiss open loops (email topics) from future digests, and to forget stale stored memories."
