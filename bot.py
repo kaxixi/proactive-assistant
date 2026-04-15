@@ -452,6 +452,7 @@ _COMMANDS_TEXT = (
     "Commands:\n"
     "/digest — generate a digest right now\n"
     "/loops — list your open email loops (numbered)\n"
+    "/cleanup — auto-close loops you've already handled in Gmail (archived or replied)\n"
     "/memoryreview — review stored memories for stale or contradictory entries\n"
     "/availability [this/next week] — show free meeting slots\n"
     "/morningavailability [this/next week] — morning slots only\n"
@@ -500,6 +501,23 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Running digest now...")
     from scheduler import run_daily_digest
     await run_daily_digest()
+
+
+async def cmd_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Re-check every open loop against Gmail and auto-close the ones Erez
+    has already handled (archived or replied outside Claudette)."""
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text("🧹 Checking open loops against Gmail...")
+    from scheduler import _auto_close_handled_loops, _format_auto_close_footer
+    closed = _auto_close_handled_loops()
+    if not closed:
+        await update.message.reply_text(
+            "Nothing to auto-close — every open loop still has active inbox activity waiting on you."
+        )
+        return
+    footer = _format_auto_close_footer(closed).lstrip("\n—").lstrip()
+    await update.message.reply_text(footer)
 
 
 async def cmd_memoryreview(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -918,6 +936,7 @@ def run_bot():
     app.add_handler(CommandHandler("commands", cmd_commands))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("cleanup", cmd_cleanup))
     app.add_handler(CommandHandler("memoryreview", cmd_memoryreview))
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("loops", cmd_loops))

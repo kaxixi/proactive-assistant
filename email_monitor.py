@@ -19,17 +19,28 @@ REPLY_URGENCY_HIGH = 3
 REPLY_URGENCY_MEDIUM = 7
 FOLLOWUP_THRESHOLD = 5
 
-# Automated/noise senders to always skip (pattern matching)
+# Automated/noise senders to always skip (pattern matching via re.search —
+# patterns may appear anywhere in the address). Covers common "no reply"
+# obfuscations and known-transactional subdomains.
 AUTOMATED_SENDER_PATTERNS = [
-    r"noreply@",
-    r"no-reply@",
+    r"no[._-]?reply",                 # noreply, no-reply, no.reply, no_reply
+    r"do[._-]?not[._-]?reply",        # donotreply, do-not-reply, etc.
     r"notifications?@",
     r"mailer-daemon@",
-    r".*@.*\.vercel\.com",
-    r".*@vercel\.com",
-    r".*@github\.com",
-    r".*@googlegroups\.com",
+    r"@notification\.",               # e.g. capitalone@notification.capitalone.com
+    r"@post\.applecard\.",
+    r"@.*\.(vercel|github|googlegroups)\.com$",
+    r"@(vercel|github|googlegroups)\.com$",
 ]
+
+# Gmail "category" labels that indicate the email is transactional,
+# promotional, or FYI rather than a personal message needing action.
+NOISE_CATEGORY_LABELS = {
+    "CATEGORY_PROMOTIONS",
+    "CATEGORY_UPDATES",
+    "CATEGORY_FORUMS",
+    "CATEGORY_SOCIAL",
+}
 
 # Subject patterns that indicate automated/newsletter emails
 NEWSLETTER_PATTERNS = [
@@ -95,7 +106,7 @@ def _is_automated_sender(email_addr: str, never_flag: list) -> bool:
     if email_addr in never_flag:
         return True
     for pattern in AUTOMATED_SENDER_PATTERNS:
-        if re.match(pattern, email_addr, re.IGNORECASE):
+        if re.search(pattern, email_addr, re.IGNORECASE):
             return True
     return False
 
@@ -286,6 +297,15 @@ def scan_inbox(my_email: str = None, days_back: int = 14, after_timestamp: str =
         if original_sender_email not in always_flag:
             if _is_automated_sender(last_sender_email, never_flag):
                 continue
+
+        # Skip Gmail-categorized promotional/transactional/FYI mail unless
+        # the sender is in always_flag or the thread is marked IMPORTANT.
+        if (
+            set(labels) & NOISE_CATEGORY_LABELS
+            and original_sender_email not in always_flag
+            and "IMPORTANT" not in labels
+        ):
+            continue
 
         # Detect newsletters
         is_newsletter = _is_newsletter(subject, last_headers)

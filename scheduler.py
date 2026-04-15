@@ -214,6 +214,10 @@ CRITICAL — Accuracy rules for summaries:
 8. Note who sent the last message. If Erez sent the last message and is waiting for a reply, say "Erez replied, waiting for response" — do NOT say the other person needs a reply.
 9. If the snippet is too short to understand the context, set summary to "Context unclear from preview — [subject] from [sender]" and set urgency to "low".
 
+Loop-worthiness rules (PREVENT CLUTTER — apply strictly):
+10. If the email is a receipt, statement, order/booking confirmation, verification code, account alert, shipping update, tax-form notice, or pure FYI announcement with NO question or ask directed at Erez, set urgency to "low" and prefix the title with "[FYI] ". These belong at the bottom of the digest, not in the active work list.
+11. For cold outreach (unsolicited journal/publisher invitations, promotional pitches, speaker/consulting asks from strangers, recruiting spam): set urgency to "low" unless the sender or topic appears in Erez's <learned_context> priorities/preferences. Do not elevate first-contact outreach above items he is already working on.
+
 Return ONLY valid JSON (no markdown fences) with this structure:
 {{
   "loops": [
@@ -426,6 +430,131 @@ def _group_loops_by_priority(loops: list[OpenLoop]) -> str:
         lines.append("")
 
     return "\n".join(lines) if lines else "None — inbox looks clean."
+
+
+def _auto_close_handled_loops() -> list[tuple[str, str]]:
+    """Re-check every open loop's Gmail state and auto-dismiss ones Erez
+    has clearly handled outside Claudette.
+
+    Rules:
+      - If none of the loop's threads still carry the INBOX label → dismiss
+        with reason "archived in Gmail".
+      - Else if every thread still in the inbox has Erez's address as the
+        sender of its most recent message → dismiss with reason
+        "replied in Gmail".
+
+    Returns a list of (title, reason) for each dismissed loop so the caller
+    can surface a summary.
+    """
+    from googleapiclient.discovery import build
+    from google_auth import get_credentials
+    from open_loops import get_open_loops, dismiss_loop
+
+    open_loops = get_open_loops()
+    if not open_loops:
+        return []
+
+    creds = get_credentials()
+    service = build("gmail", "v1", credentials=creds)
+    my_email = service.users().getProfile(userId="me").execute()["emailAddress"].lower()
+
+    # Collect all unique thread IDs so we can batch-fetch once
+    all_tids = []
+    seen = set()
+    for loop in open_loops:
+        for tid in loop.thread_ids:
+            if tid not in seen:
+                seen.add(tid)
+                all_tids.append(tid)
+
+    thread_info: dict[str, dict] = {}  # tid → {"in_inbox": bool, "user_sent_last": bool, "missing": bool}
+    batch_size = 20
+    for i in range(0, len(all_tids), batch_size):
+        batch = service.new_batch_http_request()
+
+        def _cb(tid):
+            def cb(request_id, response, exception):
+                if exception is not None:
+                    # 404 = thread permanently deleted; treat as "not in inbox".
+                    thread_info[tid] = {"in_inbox": False, "user_sent_last": False, "missing": True}
+                    return
+                messages = response.get("messages", []) or []
+                if not messages:
+                    thread_info[tid] = {"in_inbox": False, "user_sent_last": False, "missing": True}
+                    return
+                last_msg = messages[-1]
+                last_labels = set(last_msg.get("labelIds", []))
+                last_from = _get_header_value(last_msg.get("payload", {}).get("headers", []), "From")
+                last_sender = _parse_addr(last_from)
+                thread_info[tid] = {
+                    "in_inbox": "INBOX" in last_labels,
+                    "user_sent_last": last_sender == my_email,
+                    "missing": False,
+                }
+            return cb
+
+        for tid in all_tids[i:i + batch_size]:
+            batch.add(
+                service.users().threads().get(
+                    userId="me", id=tid, format="metadata",
+                    metadataHeaders=["From"],
+                ),
+                callback=_cb(tid),
+            )
+        try:
+            batch.execute()
+        except Exception as e:
+            logger.warning(f"Auto-close batch fetch failed: {e}")
+
+    closed: list[tuple[str, str]] = []
+    for loop in open_loops:
+        infos = [thread_info.get(tid) for tid in loop.thread_ids]
+        infos = [info for info in infos if info is not None]
+        if not infos:
+            continue
+
+        in_inbox = [info for info in infos if info["in_inbox"]]
+        if not in_inbox:
+            dismiss_loop(loop.loop_id, "archived in Gmail")
+            closed.append((loop.title, "archived"))
+        elif all(info["user_sent_last"] for info in in_inbox):
+            dismiss_loop(loop.loop_id, "replied in Gmail")
+            closed.append((loop.title, "replied"))
+
+    if closed:
+        logger.info(f"Auto-closed {len(closed)} handled loops")
+    return closed
+
+
+def _get_header_value(headers: list, name: str) -> str:
+    for h in headers or []:
+        if h.get("name", "").lower() == name.lower():
+            return h.get("value", "")
+    return ""
+
+
+def _parse_addr(from_header: str) -> str:
+    import email.utils
+    _, addr = email.utils.parseaddr(from_header or "")
+    return addr.lower()
+
+
+def _format_auto_close_footer(closed: list[tuple[str, str]]) -> str:
+    """Render an auto-close summary for the digest footer."""
+    if not closed:
+        return ""
+    archived = sum(1 for _, r in closed if r == "archived")
+    replied = sum(1 for _, r in closed if r == "replied")
+    parts = []
+    if archived:
+        parts.append(f"{archived} archived in Gmail")
+    if replied:
+        parts.append(f"{replied} replied in Gmail")
+    header = f"🧹 Auto-closed {len(closed)} loop(s): " + ", ".join(parts)
+    lines = [header]
+    for title, reason in closed:
+        lines.append(f"  • \"{title}\" ({reason})")
+    return "\n\n—\n" + "\n".join(lines)
 
 
 def _apply_follow_up_to_loops(loops: list[OpenLoop], loops_xml: str) -> str:
@@ -697,6 +826,16 @@ async def run_daily_digest(local_now: datetime = None):
                 label="token_warning",
             )
 
+        # 0.5. Auto-close loops Erez has clearly handled in Gmail outside of
+        # Claudette (archived or user-replied-last). Runs before the scan so
+        # the dismissed loops don't re-enter grouping.
+        auto_closed: list[tuple[str, str]] = []
+        if ENABLE_EMAIL:
+            try:
+                auto_closed = _auto_close_handled_loops()
+            except Exception as e:
+                logger.warning(f"Auto-close of handled loops failed (non-fatal): {e}")
+
         # 1. Scan emails (if enabled) — incremental when possible
         if ENABLE_EMAIL:
             last_scan = get_last_scan_time()
@@ -738,7 +877,9 @@ async def run_daily_digest(local_now: datetime = None):
             overflow_note=processed["overflow_note"],
         )
 
-        # 5. Send via Telegram
+        # 5. Send via Telegram (with auto-close footer appended at the bottom)
+        if auto_closed:
+            digest = digest.rstrip() + _format_auto_close_footer(auto_closed)
         await send_message(digest, include_buttons=True)
         logger.info("Daily digest sent successfully")
 
