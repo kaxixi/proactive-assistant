@@ -38,6 +38,12 @@ _LEGACY_FILES = {
 
 
 def _default_state() -> dict:
+    # Note: `preferences` is absent by design. It existed as a transitional
+    # section during Step 1 to hold migrated preferences.json contents, but
+    # Step 2 folds its data into `rules.*` and `loops` and removes the
+    # section outright. Keeping it out of the default shape means
+    # _ensure_shape() won't resurrect an empty `preferences` after
+    # rules.migrate_from_preferences() drops it.
     return {
         "version": 1,
         "narrative": {
@@ -48,13 +54,6 @@ def _default_state() -> dict:
         },
         "rules": {"ingestion": [], "closure": [], "priority": []},
         "loops": [],
-        "preferences": {
-            "dismissed_threads": [],
-            "senders_always_flag": [],
-            "senders_never_flag": [],
-            "feedback_log": [],
-            "rules": [],
-        },
         "session": {
             "last_scheduler_messages": [],
             "digest_loop_numbers": {},
@@ -109,13 +108,12 @@ def _migrate_from_legacy() -> dict:
     if isinstance(loops, list):
         state["loops"] = loops
 
-    # preferences.json → preferences (preserving all keys, incl. senders and feedback_log)
+    # preferences.json → transitional `preferences` section. Step 2's
+    # rules.migrate_from_preferences() reads this and folds it into
+    # rules.* / loops, then drops the section.
     prefs = _read_json(_LEGACY_FILES["preferences"])
     if isinstance(prefs, dict):
-        # Merge onto defaults so unknown keys survive and missing keys stay empty
-        merged = dict(state["preferences"])
-        merged.update(prefs)
-        state["preferences"] = merged
+        state["preferences"] = prefs
 
     # scan_state.json → pipeline
     scan = _read_json(_LEGACY_FILES["scan_state"])

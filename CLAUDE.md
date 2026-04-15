@@ -23,7 +23,7 @@ There is no test suite in this repo; verify changes by running `scheduler.py --f
 - **calendar_digest.py** — Fetches meetings, flags non-recurring events and prep needs. Exposes `get_user_timezone()` and `get_meetings_for_range()`.
 - **priorities.py** — Fetches a published priorities list (URL configurable via PRIORITIES_URL env var).
 - **availability.py** — Computes free meeting slots. Supports `/availability` and `/morningavailability` commands with flexible date parsing.
-- **preferences.py** — Legacy dismissed threads storage (preferences.json). Preference rules live in memory.json.
+- **rules.py** — Structured ingestion/closure/priority rules stored under `state.rules.*`. Used by the ingestion pipeline to deterministically skip or always-flag senders (replacing the old `senders_never_flag` / `senders_always_flag` lists). Each rule tracks a `source_memory_id` so rules disappear automatically when their source memory is removed.
 - **scan_state.py** — Tracks incremental email scanning progress (last scan timestamp, seen thread IDs).
 - **interaction_tracker.py** — Records button presses and loop interactions, detects behavioral patterns for auto-deprioritization suggestions.
 - **drive_search.py** / **dropbox_search.py** — File search for Google Drive and Dropbox.
@@ -142,7 +142,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - **Calendar-first, email-optional** — calendar features work independently (ENABLE_EMAIL=false). Email adds Gmail scanning, search, and loop dismissals.
 - **Batch Gmail API** — threads fetched in batches of 20 for ~5x speedup
 - **Incremental scanning** — only process new emails since last scan. Open loops are the persistent source of truth. Dismissed threads never re-processed.
-- **Loop-based dismissals** — dismissing a topic closes the loop (all member threads), clears follow-up memories, creates resolved memory. Legacy per-thread dismissals in preferences.json still work as fallback.
+- **Loop-based dismissals** — dismissing a topic closes the loop (all member threads), clears follow-up memories, creates resolved memory. The Gmail-fallback path (when no loop matches a user query) creates a single-thread dismissed loop via `open_loops.dismiss_thread_as_loop()` so every dismissal lives in the unified loops list.
 - **Scheduler→bot context bridge** — scheduler and bot are separate processes. `last_scheduler_messages.json` persists the last 3 scheduler messages (digests, memory reviews) so the bot has context when the user replies. `digest_loops.json` maps loop numbers to IDs.
 - **OAuth token on VM** — token.json must be generated locally (browser required) then copied to VM. Tokens expire every 7 days (unverified app). `google_auth.py` catches RefreshError and deletes stale token instead of crashing; also detects headless systemd environment and raises a clear error instead of trying to open a browser. Scheduler sends a Telegram warning starting on day 6 with the exact refresh commands.
 - **Timezone-aware scheduling** — timer fires every 3h, Python checks Google Calendar timezone. No hardcoded timezone.

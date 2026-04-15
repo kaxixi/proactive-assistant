@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from googleapiclient.discovery import build
 
 from google_auth import get_credentials
-from preferences import load_preferences
+from rules import sender_never_flagged, sender_always_flagged
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +101,12 @@ def _extract_name(from_header: str) -> str:
     return name or from_header
 
 
-def _is_automated_sender(email_addr: str, never_flag: list) -> bool:
-    """Check if sender is automated/noise."""
-    if email_addr in never_flag:
+def _is_automated_sender(email_addr: str) -> bool:
+    """Check if sender is automated/noise.
+
+    Combines the hard-coded automation patterns with user-defined
+    ingestion rules (action='skip')."""
+    if sender_never_flagged(email_addr):
         return True
     for pattern in AUTOMATED_SENDER_PATTERNS:
         if re.search(pattern, email_addr, re.IGNORECASE):
@@ -200,9 +203,6 @@ def scan_inbox(my_email: str = None, days_back: int = 14, after_timestamp: str =
     """
     service = _get_gmail_service()
     now = datetime.now(timezone.utc)
-    prefs = load_preferences()
-    never_flag = prefs.get("senders_never_flag", [])
-    always_flag = prefs.get("senders_always_flag", [])
 
     if not my_email:
         profile = service.users().getProfile(userId="me").execute()
@@ -293,23 +293,25 @@ def scan_inbox(my_email: str = None, days_back: int = 14, after_timestamp: str =
 
         labels = last_msg.get("labelIds", [])
 
+        always_flag = sender_always_flagged(original_sender_email)
+
         # Skip automated senders (unless in always-flag list)
-        if original_sender_email not in always_flag:
-            if _is_automated_sender(last_sender_email, never_flag):
+        if not always_flag:
+            if _is_automated_sender(last_sender_email):
                 continue
 
         # Skip Gmail-categorized promotional/transactional/FYI mail unless
         # the sender is in always_flag or the thread is marked IMPORTANT.
         if (
             set(labels) & NOISE_CATEGORY_LABELS
-            and original_sender_email not in always_flag
+            and not always_flag
             and "IMPORTANT" not in labels
         ):
             continue
 
         # Detect newsletters
         is_newsletter = _is_newsletter(subject, last_headers)
-        if is_newsletter and original_sender_email not in always_flag:
+        if is_newsletter and not always_flag:
             newsletters.append(FlaggedEmail(
                 subject=subject,
                 sender=original_sender_email,
@@ -337,7 +339,7 @@ def scan_inbox(my_email: str = None, days_back: int = 14, after_timestamp: str =
 
             # Skip low urgency unless important
             if urgency == "low" and "IMPORTANT" not in labels:
-                if original_sender_email not in always_flag:
+                if not always_flag:
                     continue
 
             flagged.append(FlaggedEmail(

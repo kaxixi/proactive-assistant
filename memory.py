@@ -274,45 +274,6 @@ def get_preference_memories() -> list[dict]:
     return [m for m in get_active_memories() if m["type"] == "preference"]
 
 
-def migrate_rules_to_memories():
-    """Migrate rules from preferences.json into preference memories.
-
-    Idempotent — safe to run multiple times. Clears the rules list after migration.
-    """
-    try:
-        from preferences import load_preferences, save_preferences
-        prefs = load_preferences()
-        rules = prefs.get("rules", [])
-        if not rules:
-            return
-
-        new_memories = []
-        for rule in rules:
-            # Best-effort tagging from rule text
-            tags = []
-            rule_lower = rule.lower()
-            for keyword in ("email", "meeting", "calendar", "deadline", "travel"):
-                if keyword in rule_lower:
-                    tags.append(keyword)
-            new_memories.append({
-                "type": "preference",
-                "content": rule,
-                "tags": tags,
-                "source": "migrated_rule",
-            })
-
-        if new_memories:
-            add_memories(new_memories)
-            logger.info(f"Migrated {len(new_memories)} rules to preference memories")
-
-        # Clear rules list in preferences.json
-        prefs["rules"] = []
-        save_preferences(prefs)
-        logger.info("Cleared rules list from preferences.json after migration")
-    except Exception as e:
-        logger.warning(f"Rule migration failed (non-fatal): {e}")
-
-
 def _extract_event_date(content: str, created_at: str) -> datetime | None:
     """Try to extract a specific event date from a memory's content.
 
@@ -489,14 +450,11 @@ def _get_handled_context() -> str:
     data = load_memories()
     resolved = [m for m in data["memories"] if m["type"] == "resolved"]
 
-    lines = []
-    for m in resolved:
-        lines.append(f"- {m['content']}")
+    lines = [f"- {m['content']}" for m in resolved]
 
-    # Also include dismissed threads from preferences
     try:
-        from preferences import get_dismissed_context
-        dismissed = get_dismissed_context()
+        from open_loops import get_dismissed_context_text
+        dismissed = get_dismissed_context_text()
         if dismissed:
             lines.append(dismissed)
     except Exception:

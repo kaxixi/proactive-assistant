@@ -12,12 +12,12 @@ from calendar_digest import get_upcoming_meetings, get_meetings_for_range, get_u
 from analyzer import generate_daily_digest
 import anthropic
 
-from preferences import load_preferences, get_dismissed_context, get_dismissed_thread_ids
+from open_loops import get_dismissed_context_text
 from priorities import fetch_priorities
 from memory import (
     get_memories_for_prompt, extract_and_store, compact_memories,
     generate_memory_review, mark_review_done,
-    get_active_memories, migrate_rules_to_memories,
+    get_active_memories,
 )
 from bot import send_message
 from config import DIGEST_HOUR, DIGEST_MINUTE, ENABLE_EMAIL, ANTHROPIC_API_KEY, CLAUDE_MODEL
@@ -64,18 +64,15 @@ def _get_digest_type_and_calendar(local_now: datetime) -> tuple[str, list]:
 # ---------------------------------------------------------------------------
 
 def _hard_filter_dismissed(emails: list[FlaggedEmail]) -> list[FlaggedEmail]:
-    """Remove emails whose thread_id matches a dismissed thread or dismissed loop."""
-    dismissed_ids = get_dismissed_thread_ids()
-    # Also include thread IDs from dismissed loops
-    loop_dismissed_ids = get_loop_thread_ids(status="dismissed")
-    all_dismissed = dismissed_ids | loop_dismissed_ids
-    if not all_dismissed:
+    """Remove emails whose thread_id is in any dismissed loop."""
+    dismissed_ids = get_loop_thread_ids(status="dismissed")
+    if not dismissed_ids:
         return emails
     before = len(emails)
-    filtered = [e for e in emails if e.thread_id not in all_dismissed]
+    filtered = [e for e in emails if e.thread_id not in dismissed_ids]
     removed = before - len(filtered)
     if removed:
-        logger.info(f"Pre-processing: hard-filtered {removed} dismissed thread(s) (legacy: {len(dismissed_ids)}, loops: {len(loop_dismissed_ids)})")
+        logger.info(f"Pre-processing: hard-filtered {removed} dismissed thread(s)")
     return filtered
 
 
@@ -639,7 +636,7 @@ def _format_calendar(meetings: list[Meeting], local_now: datetime) -> str:
     return "\n".join(lines)
 
 
-def _format_preferences(prefs: dict) -> str:
+def _format_preferences() -> str:
     """Format preferences as text for XML tag, reading from preference memories."""
     from memory import get_preference_memories
     pref_memories = get_preference_memories()
@@ -651,7 +648,6 @@ def _format_preferences(prefs: dict) -> str:
 def preprocess_for_digest(
     flagged_emails: list[FlaggedEmail],
     meetings: list[Meeting],
-    prefs: dict,
     priorities: str,
     memories_context: str,
     dismissed_context: str,
@@ -736,7 +732,7 @@ def preprocess_for_digest(
 
     # Format other sections
     priorities_xml = priorities if priorities else ""
-    preferences_xml = _format_preferences(prefs)
+    preferences_xml = _format_preferences()
     memories_xml = memories_context if memories_context else ""
     dismissed_xml = dismissed_context if dismissed_context else ""
 
@@ -782,6 +778,11 @@ def is_digest_time() -> tuple[bool, datetime | None]:
 async def run_daily_digest(local_now: datetime = None):
     """Run the full daily digest pipeline and send via Telegram."""
     logger.info("Starting daily digest...")
+
+    # One-shot: fold legacy preferences.* into rules.* + dismissed loops.
+    # Idempotent — a no-op once the preferences section has been dropped.
+    from rules import migrate_from_preferences
+    migrate_from_preferences()
 
     try:
         # Determine digest type and fetch calendar
@@ -831,17 +832,16 @@ async def run_daily_digest(local_now: datetime = None):
             logger.info("Email scanning disabled — calendar-only mode")
             flagged_emails = []
 
-        # 2. Load preferences, priorities, and memories
-        prefs = load_preferences()
+        # 2. Load priorities and memories
         logger.info("Fetching priorities...")
         priorities = fetch_priorities()
         memories_context = get_memories_for_prompt()
-        dismissed_context = get_dismissed_context() if ENABLE_EMAIL else ""
+        dismissed_context = get_dismissed_context_text() if ENABLE_EMAIL else ""
 
         # 3. Pre-process: filter, tag, group, format
         logger.info("Running pre-processing pipeline...")
         processed = preprocess_for_digest(
-            flagged_emails, meetings, prefs, priorities,
+            flagged_emails, meetings, priorities,
             memories_context, dismissed_context, local_now,
         )
 
@@ -898,9 +898,6 @@ async def run_daily_digest(local_now: datetime = None):
 
 
 def main():
-    # Run migration at startup (idempotent)
-    migrate_rules_to_memories()
-
     # When called with --force, skip the time check
     if "--force" in sys.argv:
         logger.info("Force mode — skipping time check")

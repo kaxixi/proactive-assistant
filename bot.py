@@ -232,7 +232,7 @@ def _dismiss_email(query: str, reason: str) -> str:
     # Step 2: Fall back to Gmail search (for items not in latest scan)
     from googleapiclient.discovery import build
     from google_auth import get_credentials
-    from preferences import dismiss_thread
+    from open_loops import dismiss_thread_as_loop
     import email.utils
 
     creds = get_credentials()
@@ -283,7 +283,12 @@ def _dismiss_email(query: str, reason: str) -> str:
 
         if sender_email_addr.lower() == primary_sender_lower:
             subject = next((h["value"] for h in headers if h["name"].lower() == "subject"), "")
-            dismiss_thread(thread_id, subject=subject, reason=reason)
+            dismiss_thread_as_loop(
+                thread_id=thread_id,
+                subject=subject,
+                sender=primary_sender_lower,
+                reason=reason,
+            )
             dismissed_subjects.append(subject)
             seen_thread_ids.add(thread_id)
 
@@ -914,8 +919,8 @@ async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def run_bot():
     """Start the bot in long-polling mode (for interactive use)."""
-    from memory import migrate_rules_to_memories
-    migrate_rules_to_memories()
+    from rules import migrate_from_preferences
+    migrate_from_preferences()
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_error_handler(_on_error)

@@ -66,7 +66,8 @@ calendar_digest.py    — Google Calendar: meetings, prep flags, timezone detect
 analyzer.py           — Claude API: generates the natural language digest
 priorities.py         — Fetches a published priorities list (e.g., Simplenote URL)
 memory.py             — Episodic memory: extracts and stores key facts from every interaction
-preferences.py        — Learning system: dismissed threads (preferences now in memory.py)
+rules.py              — Structured ingestion/closure/priority rules (replaces the old preferences.py sender lists)
+state.py              — Unified state store: single state.json with journaled writes and rolling backups
 drive_search.py       — Google Drive file search
 dropbox_search.py     — Dropbox file search
 google_auth.py        — Shared Google OAuth2 (Gmail, Calendar, Drive)
@@ -346,9 +347,11 @@ Relationships and preferences are never compacted. After 10 years, the memory st
 
 ### Preferences and thread dismissals
 
-Lasting preferences (e.g., "Always flag emails from Desiree as high priority") are stored as `preference` type memories in `memory.json` — the same system that handles all other learned knowledge. They never expire and are loaded into every digest and bot prompt.
+Lasting preferences (e.g., "Always flag emails from Desiree as high priority") are stored as `preference` type memories in the unified `state.json` — the same system that handles all other learned knowledge. They never expire and are loaded into every digest and bot prompt.
 
-Thread dismissals are stored in `preferences.json`. When you tell Claudette an email is handled ("Cap One is dealt with"), the bot dismisses the Gmail thread by ID. Dismissed threads aren't hard-filtered — instead, the dismissed context (subject + reason) is passed into the digest prompt so Claude can use judgment. Dismissed threads auto-expire after 30 days.
+Structured ingestion rules (skip/always-flag at scan time) live under `state.rules.ingestion` and are applied deterministically before the LLM sees anything. The goal is that once you've told Claudette to ignore a sender, she never re-asks about emails from them.
+
+Thread dismissals become single-thread dismissed loops in the unified loops list. When you tell Claudette an email is handled ("Cap One is dealt with"), the matching loop is closed; if no loop matches, the Gmail-fallback path creates a dismissed loop for the thread so future scans won't re-flag it. Dismissed context (title + reason) is passed into the digest prompt so Claude can use judgment about related follow-ups.
 
 ## License
 

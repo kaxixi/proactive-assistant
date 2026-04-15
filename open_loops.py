@@ -218,6 +218,72 @@ def upsert_loops(new_loops: list[OpenLoop]):
     logger.info(f"Upserted loops: {len(new_loops)} processed, {len(existing)} total on disk")
 
 
+def dismiss_thread_as_loop(
+    thread_id: str,
+    subject: str = "",
+    sender: str = "",
+    reason: str = "",
+    tags: list[str] | None = None,
+    dismissed_at: str | None = None,
+) -> OpenLoop:
+    """Record an ad-hoc thread dismissal as a single-thread dismissed loop.
+
+    Used by the bot's Gmail-fallback dismissal path (for threads that don't
+    match any existing loop) and by the one-shot migration from
+    preferences.dismissed_threads. Keeps the "one store for loops"
+    invariant: every dismissed thread lives in the loops list.
+    """
+    now = _now_iso()
+    loop = OpenLoop(
+        loop_id=_new_id(),
+        title=subject or "(no subject)",
+        summary=f"Ad-hoc thread dismissal: {reason}" if reason else "Ad-hoc thread dismissal",
+        thread_ids=[thread_id],
+        senders=[sender] if sender else [],
+        urgency="low",
+        age_days=0,
+        reason="dismissed",
+        snippets=[],
+        status="dismissed",
+        tags=list(tags or []),
+        created_at=dismissed_at or now,
+        updated_at=now,
+        dismissed_at=dismissed_at or now,
+        dismiss_reason=reason or "ad-hoc dismissal",
+    )
+    loops = load_loops()
+    loops.append(loop)
+    save_loops(loops)
+    logger.info(f"Ad-hoc thread dismissal stored as loop {loop.loop_id}: {subject}")
+    return loop
+
+
+def get_dismissed_context_text(window_days: int = 30) -> str:
+    """Dismissed-loop context for the digest prompt, so Claude can judge
+    whether a new email from the same sender/topic is truly new or a
+    duplicate of something already handled. Takes over what the old
+    preferences.get_dismissed_context used to produce."""
+    now = datetime.now(timezone.utc)
+    lines = []
+    for loop in load_loops():
+        if loop.status != "dismissed" or not loop.dismissed_at:
+            continue
+        try:
+            dismissed_at = datetime.fromisoformat(loop.dismissed_at)
+        except (ValueError, TypeError):
+            continue
+        if dismissed_at.tzinfo is None:
+            dismissed_at = dismissed_at.replace(tzinfo=timezone.utc)
+        days_ago = (now - dismissed_at).days
+        if days_ago >= window_days:
+            continue
+        lines.append(
+            f"- [loop:{loop.loop_id}] \"{loop.title}\" ({len(loop.thread_ids)} threads) "
+            f"— dismissed {days_ago}d ago (reason: {loop.dismiss_reason or 'handled'})"
+        )
+    return "\n".join(lines)
+
+
 def find_loop_by_query(query: str) -> OpenLoop | None:
     """Find an open loop matching a search query.
 
