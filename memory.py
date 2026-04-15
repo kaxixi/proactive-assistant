@@ -122,6 +122,31 @@ def save_memories(data: dict):
 # Add and retrieve memories
 # ---------------------------------------------------------------------------
 
+def forget_memories(query: str, types: list[str] | None = None) -> tuple[int, list[str]]:
+    """Delete memory entries whose content matches the query (case-insensitive
+    substring) and (optionally) whose type is in `types`. Returns the number
+    of memories removed and a sample of up to 5 removed contents (so the
+    caller can confirm to the user what got cleared).
+    """
+    if not query or not query.strip():
+        return 0, []
+    q = query.strip().lower()
+    data = load_memories()
+    keep, removed = [], []
+    for m in data["memories"]:
+        match_type = (types is None) or (m.get("type") in types)
+        match_text = q in (m.get("content") or "").lower()
+        if match_type and match_text:
+            removed.append(m["content"])
+        else:
+            keep.append(m)
+    if removed:
+        data["memories"] = keep
+        save_memories(data)
+        logger.info(f"Forgot {len(removed)} memories matching '{query}' (types={types})")
+    return len(removed), removed[:5]
+
+
 def clear_follow_ups_by_tags(tags: list):
     """Remove follow_up memories that match the given tags (used when a loop is dismissed)."""
     data = load_memories()

@@ -28,6 +28,10 @@ _LAST_MESSAGES_FILE = _os.path.join(_PROJECT_DIR, "last_scheduler_messages.json"
 _conversation_history: list[dict] = []
 _MAX_HISTORY = 5
 _last_interaction_time: float = 0
+# Highest scheduler-message timestamp already injected into _conversation_history
+# as an assistant turn. Keeps replies to digests/memory-reviews stitched into
+# the conversation thread instead of only living in the system prompt.
+_last_scheduler_inject_ts: float = 0
 
 # Cache for fetched full threads (cleared on new digest)
 _thread_cache: dict[str, str] = {}
@@ -74,6 +78,31 @@ def _load_scheduler_messages() -> list[dict]:
 
 # Tool definitions for Claude
 _BASE_TOOLS = [
+    {
+        "name": "forget_memory",
+        "description": (
+            "Delete stored memory entries whose content matches the query "
+            "(case-insensitive substring). Use this when Erez asks you to "
+            "forget, clear, remove, or clean up memories — especially when "
+            "responding to a memory review where he confirms stale facts, "
+            "duplicates, or outdated items can be dropped. Memories are "
+            "DIFFERENT from open loops: loops are email topics (use "
+            "dismiss_email), memories are stored facts/preferences/follow-ups "
+            "(use this tool). Optionally restrict to specific memory types."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Substring to match against memory content (e.g. 'Lachman Walmart', 'March meeting', 'Story Explorers')."},
+                "types": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["preference", "relationship", "follow_up", "fact", "resolved", "conversation_summary", "pending"]},
+                    "description": "Optional: only forget memories of these types. Omit to consider all types.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
     {
         "name": "search_drive",
         "description": "Search Google Drive for files matching a query. Use when Erez asks to find a document, paper, or file in Drive.",
@@ -319,6 +348,16 @@ def _execute_tool(tool_name: str, tool_input: dict) -> str:
             return _search_gmail(tool_input["query"])
         elif tool_name == "dismiss_email":
             return _dismiss_email(tool_input["query"], tool_input["reason"])
+        elif tool_name == "forget_memory":
+            from memory import forget_memories
+            count, sample = forget_memories(
+                tool_input["query"], tool_input.get("types"),
+            )
+            if count == 0:
+                return f"No memories matched '{tool_input['query']}'. Nothing forgotten."
+            preview = "; ".join(f'"{s[:80]}"' for s in sample)
+            extra = f" (showing first {len(sample)} of {count})" if count > len(sample) else ""
+            return f"Forgot {count} memor{'y' if count == 1 else 'ies'}: {preview}{extra}"
         else:
             return f"Unknown tool: {tool_name}"
     except Exception as e:
@@ -381,10 +420,10 @@ def _build_system_prompt(extra_instructions: str = "") -> str:
   - "That's handled" → dismiss with reason "handled"
   - "Not relevant" / "Don't need that" → dismiss with reason "not relevant"
   When in doubt about whether Erez means to dismiss, dismiss it. It's better to dismiss and have him re-flag than to keep nagging about handled items."""
-        tools_description = "You have tools to search Gmail, Google Drive, and Dropbox, and to dismiss open loops (email topics) from future digests."
+        tools_description = "You have tools to search Gmail, Google Drive, and Dropbox, to dismiss open loops (email topics) from future digests, and to forget stale stored memories."
     else:
         dismiss_instructions = ""
-        tools_description = "You have tools to search Google Drive and Dropbox."
+        tools_description = "You have tools to search Google Drive and Dropbox, and to forget stale stored memories."
 
     system_prompt = f"""You are Claudette, a proactive personal assistant for a behavioral science researcher named Erez.
 You communicate via Telegram.
@@ -401,6 +440,7 @@ Instructions:
 - If he's asking a question, answer it directly.
 - If he's asking you to find a file or look something up, use the search tools.
 - Use your memory context to maintain continuity — reference past conversations naturally, avoid re-asking about things you already know.
+- When Erez confirms cleanup of items raised in a memory review (stale facts, duplicates, contradictions, resolved follow-ups), use the forget_memory tool — NOT dismiss_email. Memory entries and email loops are different stores; dismiss_email only acts on loops.
 - Extract LASTING preference rules from his feedback. Return them on lines starting with "RULE:" — these will be saved automatically.
   IMPORTANT: Only create rules for truly PERMANENT preferences (e.g., "Desiree's emails are always important", "Skip all Vercel notifications"). Do NOT create rules for temporary situations like "remind me to reply to Tim" — those are follow_up memories, not rules. The memory extraction system handles follow_ups automatically.
 {extra_instructions}"""
@@ -545,7 +585,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
 
-    global _conversation_history, _last_interaction_time
+    global _conversation_history, _last_interaction_time, _last_scheduler_inject_ts
 
     user_text = update.message.text
     logger.info(f"Received message: {user_text[:100]}...")
@@ -558,6 +598,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if _last_interaction_time and (time.time() - _last_interaction_time > 1800):
             _conversation_history = []
         _last_interaction_time = time.time()
+
+        # Inject any scheduler messages (digest, memory review, etc.) that
+        # arrived since we last did so, as proper assistant turns. This makes
+        # them feel like "what I just said" instead of background context, so
+        # Erez's reply is correctly attributed.
+        scheduler_msgs = _load_scheduler_messages()
+        new_msgs = sorted(
+            (m for m in scheduler_msgs if m.get("ts", 0) > _last_scheduler_inject_ts),
+            key=lambda m: m.get("ts", 0),
+        )
+        for m in new_msgs:
+            _conversation_history.append({"role": "assistant", "content": m["text"]})
+            _last_scheduler_inject_ts = max(_last_scheduler_inject_ts, m.get("ts", 0))
 
         client = _get_claude()
         # Build messages with conversation history for multi-turn context
