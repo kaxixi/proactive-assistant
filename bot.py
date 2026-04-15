@@ -412,6 +412,7 @@ _COMMANDS_TEXT = (
     "Commands:\n"
     "/digest — generate a digest right now\n"
     "/loops — list your open email loops (numbered)\n"
+    "/memoryreview — review stored memories for stale or contradictory entries\n"
     "/availability [this/next week] — show free meeting slots\n"
     "/morningavailability [this/next week] — morning slots only\n"
     "/search <query> — search Drive and Dropbox\n"
@@ -459,6 +460,24 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Running digest now...")
     from scheduler import run_daily_digest
     await run_daily_digest()
+
+
+async def cmd_memoryreview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trigger a memory review on demand (normally runs Sundays)."""
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text("🧠 Reviewing memories...")
+    from memory import generate_memory_review, mark_review_done
+    try:
+        review = generate_memory_review()
+    except Exception as e:
+        await update.message.reply_text(f"Memory review failed: {type(e).__name__}: {e}")
+        return
+    if not review:
+        await update.message.reply_text("Memory looks clean — nothing to flag.")
+        return
+    await update.message.reply_text(f"🧠 Memory check-in:\n\n{review}")
+    mark_review_done()
 
 
 async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -733,7 +752,7 @@ async def cmd_loops(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show current open loops dashboard."""
     if not _is_authorized(update):
         return
-    from open_loops import get_open_loops
+    from open_loops import get_open_loops, loop_age_days
 
     loops = get_open_loops()
     if not loops:
@@ -741,7 +760,7 @@ async def cmd_loops(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     urgency_order = {"high": 0, "medium": 1, "low": 2}
-    loops.sort(key=lambda l: (urgency_order.get(l.urgency, 2), -l.age_days))
+    loops.sort(key=lambda l: (urgency_order.get(l.urgency, 2), -loop_age_days(l)))
 
     # Update the number→loop_id mapping so subsequent messages use these numbers
     loops_map = {}
@@ -754,7 +773,7 @@ async def cmd_loops(update: Update, context: ContextTypes.DEFAULT_TYPE):
         snooze = " ⏰" if loop.snoozed_until else ""
         lines.append(
             f"#{i} {emoji} **{loop.title}**{snooze}\n"
-            f"   {loop.age_days}d old · {len(loop.thread_ids)} thread(s) · {senders}"
+            f"   opened {loop_age_days(loop)}d ago · {len(loop.thread_ids)} thread(s) · {senders}"
         )
     _save_digest_loops(loops_map)
 
@@ -821,6 +840,7 @@ def run_bot():
     app.add_handler(CommandHandler("commands", cmd_commands))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("memoryreview", cmd_memoryreview))
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("loops", cmd_loops))
     app.add_handler(CommandHandler("availability", cmd_availability))

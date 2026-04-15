@@ -3,6 +3,16 @@
 ## What this is
 A daily automation system that acts as a proactive personal assistant, delivered via Telegram bot. Built for an academic behavioral science researcher but designed to be generalizable.
 
+## Common commands
+- Run digest now (skips time check): `source venv/bin/activate && python3 scheduler.py --force`
+- Start bot locally: `python3 bot.py`
+- Re-auth Google APIs: `python3 -c "from google_auth import get_credentials; get_credentials()"`
+- Deploy: `git push origin main`, then SSH to VM + `git pull` + restart bot (see [Development workflow](#development-workflow))
+- Tail VM logs: `gcloud compute ssh claudette --zone=us-central1-a --command='sudo journalctl -u claudette-bot.service -f'`
+- Wrapper scripts: `run_bot.sh` and `run_digest.sh` activate the venv and exec the corresponding Python entry point — used by systemd on the VM.
+
+There is no test suite in this repo; verify changes by running `scheduler.py --force` against your own Telegram chat.
+
 ## Architecture
 - **scheduler.py** — Entry point for scheduled runs. Orchestrates the full pipeline: scan emails → group into loops → generate digest. Picks digest type by day of week: weekday (Mon-Fri), weekend (Sat), week-ahead (Sun). Checks Google Calendar timezone to decide if it's digest time. Supports `--force` to skip the time check.
 - **email_monitor.py** — Scans Gmail for emails at risk of being dropped (unreplied, aging, needs follow-up). Uses batch API for performance. Fetches body preview for context. Only active when ENABLE_EMAIL=true.
@@ -105,6 +115,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - `/commands`, `/help` — show command list only (source of truth: `_COMMANDS_TEXT` in bot.py)
 - `/status` — check service connections
 - `/digest` — trigger a digest right now
+- `/memoryreview` — trigger a memory review on demand (normally runs Sundays)
 - `/loops` — show open loops dashboard with numbered list
 - `/search <query>` — search Drive and Dropbox
 - `/availability [this/next week]` — show free meeting slots

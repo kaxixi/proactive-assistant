@@ -307,6 +307,7 @@ gcloud compute ssh claudette --zone=us-central1-a --command='sudo systemctl rest
 | `/start` or `/help` | Show available commands |
 | `/status` | Check which services are connected |
 | `/digest` | Trigger a digest immediately |
+| `/memoryreview` | Run a memory review on demand (normally Sundays) |
 | `/search <query>` | Search Google Drive and Dropbox |
 | `/availability [this/next week]` | Show free meeting slots |
 | `/morningavailability [this/next week]` | Morning slots only |

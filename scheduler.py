@@ -23,6 +23,7 @@ from bot import send_message
 from config import DIGEST_HOUR, DIGEST_MINUTE, ENABLE_EMAIL, ANTHROPIC_API_KEY, CLAUDE_MODEL
 from open_loops import (
     OpenLoop, get_open_loops, get_loop_thread_ids, get_all_loop_thread_ids, upsert_loops,
+    loop_age_days,
 )
 from scan_state import get_last_scan_time, get_scanned_thread_ids, update_after_scan
 
@@ -410,9 +411,11 @@ def _group_loops_by_priority(loops: list[OpenLoop]) -> str:
         lines.append(f"--- {label} ({len(group)} loop{'s' if len(group) != 1 else ''}) ---")
         for l in group:
             sender_list = ", ".join(l.senders[:3])
+            lage = loop_age_days(l)
             lines.append(
                 f"- #{loop_num} [loop:{l.loop_id}] \"{l.title}\" — {len(l.thread_ids)} thread(s) "
-                f"({sender_list}), oldest {l.age_days} days, reason: {l.reason}"
+                f"({sender_list}), loop opened {lage} days ago, last activity {l.age_days} days ago, "
+                f"reason: {l.reason}"
             )
             if l.summary:
                 lines.append(f"  Summary: {l.summary}")

@@ -79,6 +79,24 @@ def _is_expired(loop: OpenLoop) -> bool:
         return False
 
 
+def loop_age_days(loop: OpenLoop) -> int:
+    """Days since the loop was first opened (created_at).
+
+    Use this for user-facing age, not loop.age_days — the latter resets
+    to 0 whenever a fresh email arrives in the loop, which is misleading
+    for topics that have been hanging around for a while.
+    """
+    if not loop.created_at:
+        return loop.age_days
+    try:
+        created = datetime.fromisoformat(loop.created_at)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return max(0, (datetime.now(timezone.utc) - created).days)
+    except (ValueError, TypeError):
+        return loop.age_days
+
+
 def _is_snoozed(loop: OpenLoop) -> bool:
     """Check if a loop is currently snoozed."""
     if not loop.snoozed_until:
