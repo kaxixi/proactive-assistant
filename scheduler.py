@@ -432,23 +432,29 @@ def _group_loops_by_priority(loops: list[OpenLoop]) -> str:
     return "\n".join(lines) if lines else "None — inbox looks clean."
 
 
-def _auto_close_handled_loops() -> list[tuple[str, str]]:
+def _auto_close_handled_loops() -> list[str]:
     """Re-check every open loop's Gmail state and auto-dismiss ones Erez
-    has clearly handled outside Claudette.
+    has clearly engaged with.
 
-    Rules:
-      - If none of the loop's threads still carry the INBOX label → dismiss
-        with reason "archived in Gmail".
-      - Else if every thread still in the inbox has Erez's address as the
-        sender of its most recent message → dismiss with reason
-        "replied in Gmail".
+    A loop is closed only when EVERY one of its threads is "settled":
+      - Erez has sent at least one message in the thread (participation),
+        AND
+      - The thread is either out of the inbox (he moved on) or the latest
+        message is his (he just replied).
 
-    Returns a list of (title, reason) for each dismissed loop so the caller
-    can surface a summary.
+    Rationale: archive alone is not enough — Gmail auto-categorizes and
+    users archive to clear noise. A thread where Erez never sent anything
+    is NOT handled just because it left the inbox. Conversely, if he DID
+    reply earlier and the thread is now closed out (archived, or other
+    person sent a short ack), the concern is settled even if his message
+    isn't the very last one.
+
+    Returns the titles of dismissed loops so the caller can summarize.
     """
     from googleapiclient.discovery import build
     from google_auth import get_credentials
     from open_loops import get_open_loops, dismiss_loop
+    from email_monitor import _get_header, _extract_email_address
 
     open_loops = get_open_loops()
     if not open_loops:
@@ -458,38 +464,34 @@ def _auto_close_handled_loops() -> list[tuple[str, str]]:
     service = build("gmail", "v1", credentials=creds)
     my_email = service.users().getProfile(userId="me").execute()["emailAddress"].lower()
 
-    # Collect all unique thread IDs so we can batch-fetch once
-    all_tids = []
-    seen = set()
-    for loop in open_loops:
-        for tid in loop.thread_ids:
-            if tid not in seen:
-                seen.add(tid)
-                all_tids.append(tid)
+    # Dedupe thread IDs across loops so we batch-fetch each one once.
+    all_tids = list({tid for loop in open_loops for tid in loop.thread_ids})
 
-    thread_info: dict[str, dict] = {}  # tid → {"in_inbox": bool, "user_sent_last": bool, "missing": bool}
+    thread_info: dict[str, dict] = {}  # tid → {"in_inbox", "user_sent_last", "user_participated"}
     batch_size = 20
     for i in range(0, len(all_tids), batch_size):
         batch = service.new_batch_http_request()
 
         def _cb(tid):
             def cb(request_id, response, exception):
-                if exception is not None:
-                    # 404 = thread permanently deleted; treat as "not in inbox".
-                    thread_info[tid] = {"in_inbox": False, "user_sent_last": False, "missing": True}
+                if exception is not None or not response:
+                    thread_info[tid] = {"in_inbox": False, "user_sent_last": False, "user_participated": False}
                     return
-                messages = response.get("messages", []) or []
+                messages = response.get("messages") or []
                 if not messages:
-                    thread_info[tid] = {"in_inbox": False, "user_sent_last": False, "missing": True}
+                    thread_info[tid] = {"in_inbox": False, "user_sent_last": False, "user_participated": False}
                     return
+                senders = [
+                    _extract_email_address(
+                        _get_header(m.get("payload", {}).get("headers", []), "From")
+                    )
+                    for m in messages
+                ]
                 last_msg = messages[-1]
-                last_labels = set(last_msg.get("labelIds", []))
-                last_from = _get_header_value(last_msg.get("payload", {}).get("headers", []), "From")
-                last_sender = _parse_addr(last_from)
                 thread_info[tid] = {
-                    "in_inbox": "INBOX" in last_labels,
-                    "user_sent_last": last_sender == my_email,
-                    "missing": False,
+                    "in_inbox": "INBOX" in set(last_msg.get("labelIds", [])),
+                    "user_sent_last": senders[-1] == my_email,
+                    "user_participated": any(s == my_email for s in senders),
                 }
             return cb
 
@@ -506,55 +508,35 @@ def _auto_close_handled_loops() -> list[tuple[str, str]]:
         except Exception as e:
             logger.warning(f"Auto-close batch fetch failed: {e}")
 
-    closed: list[tuple[str, str]] = []
+    def _settled(info: dict) -> bool:
+        if not info["user_participated"]:
+            return False
+        if info["in_inbox"]:
+            return info["user_sent_last"]
+        return True
+
+    closed: list[str] = []
     for loop in open_loops:
-        infos = [thread_info.get(tid) for tid in loop.thread_ids]
-        infos = [info for info in infos if info is not None]
+        infos = [thread_info[tid] for tid in loop.thread_ids if tid in thread_info]
         if not infos:
             continue
-
-        in_inbox = [info for info in infos if info["in_inbox"]]
-        if not in_inbox:
-            dismiss_loop(loop.loop_id, "archived in Gmail")
-            closed.append((loop.title, "archived"))
-        elif all(info["user_sent_last"] for info in in_inbox):
-            dismiss_loop(loop.loop_id, "replied in Gmail")
-            closed.append((loop.title, "replied"))
+        if all(_settled(info) for info in infos):
+            dismiss_loop(loop.loop_id, "handled in Gmail")
+            closed.append(loop.title)
 
     if closed:
         logger.info(f"Auto-closed {len(closed)} handled loops")
     return closed
 
 
-def _get_header_value(headers: list, name: str) -> str:
-    for h in headers or []:
-        if h.get("name", "").lower() == name.lower():
-            return h.get("value", "")
-    return ""
-
-
-def _parse_addr(from_header: str) -> str:
-    import email.utils
-    _, addr = email.utils.parseaddr(from_header or "")
-    return addr.lower()
-
-
-def _format_auto_close_footer(closed: list[tuple[str, str]]) -> str:
-    """Render an auto-close summary for the digest footer."""
+def _format_auto_close_summary(closed: list[str]) -> str:
+    """One-block summary of auto-closed loops (no leading separator)."""
     if not closed:
         return ""
-    archived = sum(1 for _, r in closed if r == "archived")
-    replied = sum(1 for _, r in closed if r == "replied")
-    parts = []
-    if archived:
-        parts.append(f"{archived} archived in Gmail")
-    if replied:
-        parts.append(f"{replied} replied in Gmail")
-    header = f"🧹 Auto-closed {len(closed)} loop(s): " + ", ".join(parts)
-    lines = [header]
-    for title, reason in closed:
-        lines.append(f"  • \"{title}\" ({reason})")
-    return "\n\n—\n" + "\n".join(lines)
+    lines = [f"🧹 Auto-closed {len(closed)} loop(s) that looked handled in Gmail:"]
+    for title in closed:
+        lines.append(f"  • \"{title}\"")
+    return "\n".join(lines)
 
 
 def _apply_follow_up_to_loops(loops: list[OpenLoop], loops_xml: str) -> str:
@@ -826,10 +808,9 @@ async def run_daily_digest(local_now: datetime = None):
                 label="token_warning",
             )
 
-        # 0.5. Auto-close loops Erez has clearly handled in Gmail outside of
-        # Claudette (archived or user-replied-last). Runs before the scan so
-        # the dismissed loops don't re-enter grouping.
-        auto_closed: list[tuple[str, str]] = []
+        # 0.5. Auto-close loops Erez has clearly replied to outside Claudette.
+        # Runs before the scan so the dismissed loops don't re-enter grouping.
+        auto_closed: list[str] = []
         if ENABLE_EMAIL:
             try:
                 auto_closed = _auto_close_handled_loops()
@@ -879,7 +860,7 @@ async def run_daily_digest(local_now: datetime = None):
 
         # 5. Send via Telegram (with auto-close footer appended at the bottom)
         if auto_closed:
-            digest = digest.rstrip() + _format_auto_close_footer(auto_closed)
+            digest = digest.rstrip() + "\n\n—\n" + _format_auto_close_summary(auto_closed)
         await send_message(digest, include_buttons=True)
         logger.info("Daily digest sent successfully")
 

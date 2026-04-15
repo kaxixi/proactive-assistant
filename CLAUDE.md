@@ -76,7 +76,7 @@ Open loops are the unit of email tracking. A loop is a topic-level concern (e.g.
 
 ### Pipeline
 ```
-scheduler._auto_close_handled_loops() → re-check each open loop's Gmail state; dismiss ones archived or user-replied-last (runs before scan each digest, also via /cleanup)
+scheduler._auto_close_handled_loops() → re-check each open loop's Gmail state; dismiss ones where Erez has participated and nothing is still awaiting his reply (runs before scan each digest, also via /loopcleanup)
 email_monitor.scan_inbox()          → list[FlaggedEmail] (incremental since last scan)
 scheduler: subtract accounted-for thread IDs (loops + previously scanned)
 scheduler._hard_filter_dismissed()  → safety net for dismissed threads
@@ -118,7 +118,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - `/digest` — trigger a digest right now
 - `/memoryreview` — trigger a memory review on demand (normally runs Sundays)
 - `/loops` — show open loops dashboard with numbered list
-- `/cleanup` — re-check every open loop against Gmail and auto-close the ones Erez already handled (archived or replied). Same check that runs at the start of each digest; use `/cleanup` when the backlog looks stale and you don't want to wait for the next digest.
+- `/loopcleanup` — re-check every open loop against Gmail and auto-close the ones Erez has engaged with. A loop is closed only when every one of its threads is "settled": Erez sent at least one message in the thread AND the thread is either out of the inbox or he sent the latest message. Archive alone is NOT enough — a thread where Erez never replied isn't handled just because it left the inbox. Runs automatically at the start of every digest; use `/loopcleanup` on demand when the backlog looks stale.
 - `/search <query>` — search Drive and Dropbox
 - `/availability [this/next week]` — show free meeting slots
 - `/morningavailability [this/next week]` — morning slots only
