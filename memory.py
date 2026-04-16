@@ -7,7 +7,6 @@ Relationships and preferences are never compacted or expired.
 
 import json
 import logging
-import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -18,8 +17,6 @@ from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 import state
 
 logger = logging.getLogger(__name__)
-
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # How long each memory type lasts before auto-expiry
 EXPIRY_DAYS = {

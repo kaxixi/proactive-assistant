@@ -70,7 +70,7 @@ All learned knowledge lives in the `narrative` section of `state.json`. The syst
 Open loops are the unit of email tracking. A loop is a topic-level concern (e.g., "Arjun's HCRP application") that may group multiple Gmail threads from different senders.
 
 ### Incremental scanning
-- `scan_state.json` tracks `last_scan_at` timestamp and `scanned_thread_ids` (threads seen but not in any loop)
+- The `pipeline` section of `state.json` tracks `last_scan_at` and `scanned_thread_ids` (threads seen but not assigned to any loop)
 - First run: full 14-day backfill. Subsequent runs: only fetch emails newer than `last_scan_at`
 - Threads already in any loop (open or dismissed) are never re-processed
 - Previously filtered threads are re-evaluated if they have new activity
@@ -91,9 +91,10 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 
 ### Numbered loop references
 - Loops are numbered sequentially (#1, #2...) in both the digest and `/loops` command
-- Number→loop_id mapping persisted in `digest_loops.json` (written by scheduler and /loops, read by bot)
+- Number→loop_id mapping persisted in `state.session.digest_loop_numbers` (written by scheduler and /loops, read by bot)
 - Users reference loops by number: "1 handled", "dismiss 3 and 5", "tell me more about 2"
 - Bot system prompt includes `<digest_loop_numbers>` section mapping numbers to titles
+- Dismissals by number route through the `dismiss_loops_by_number` tool (direct lookup — no fuzzy title matching)
 
 ### Dismissal flow
 1. User tells bot "dismiss X" or "3 handled" → `find_loop_by_query()` searches loops by title/senders/tags
@@ -108,8 +109,8 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 
 ### Lifecycle
 - Created during digest pipeline by Claude grouping call (only for new emails)
-- Persisted in `open_loops.json` between digests (new emails join existing loops)
-- Expire after 30 days without activity
+- Persisted in the `loops` section of `state.json` between digests (new emails join existing loops)
+- Open loops expire after 30 days without activity; dismissed loops are kept 90 days (for pattern detection + dismissed-context text), then pruned by `state.prune()`
 - Dismissed loop thread IDs are permanently filtered from future scans
 
 ## Bot commands
@@ -145,7 +146,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - **Batch Gmail API** — threads fetched in batches of 20 for ~5x speedup
 - **Incremental scanning** — only process new emails since last scan. Open loops are the persistent source of truth. Dismissed threads never re-processed.
 - **Loop-based dismissals** — dismissing a topic closes the loop (all member threads), clears follow-up memories, creates resolved memory. The Gmail-fallback path (when no loop matches a user query) creates a single-thread dismissed loop via `open_loops.dismiss_thread_as_loop()` so every dismissal lives in the unified loops list.
-- **Scheduler→bot context bridge** — scheduler and bot are separate processes. `last_scheduler_messages.json` persists the last 3 scheduler messages (digests, memory reviews) so the bot has context when the user replies. `digest_loops.json` maps loop numbers to IDs.
+- **Scheduler→bot context bridge** — scheduler and bot are separate processes sharing `state.json`. The `session` section persists the last 3 scheduler messages (digests, memory reviews) so the bot has context when the user replies, plus the number→loop_id map from the latest digest or `/loops` call.
 - **OAuth token on VM** — token.json must be generated locally (browser required) then copied to VM. Tokens expire every 7 days (unverified app). `google_auth.py` catches RefreshError and deletes stale token instead of crashing; also detects headless systemd environment and raises a clear error instead of trying to open a browser. Scheduler sends a Telegram warning starting on day 6 with the exact refresh commands.
 - **Timezone-aware scheduling** — timer fires every 3h, Python checks Google Calendar timezone. No hardcoded timezone.
 

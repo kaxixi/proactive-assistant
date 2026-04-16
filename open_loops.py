@@ -58,8 +58,6 @@ def save_loops(loops: list[OpenLoop]):
 
 OPEN_EXPIRY_DAYS = 30       # open loops expire after 30 days without activity
 DISMISSED_RETENTION_DAYS = 90  # dismissed loops kept 90 days for pattern detection
-# Backwards-compat alias for anything importing the old name
-EXPIRY_DAYS = OPEN_EXPIRY_DAYS
 
 
 def _is_expired(loop: OpenLoop) -> bool:
@@ -283,8 +281,7 @@ def dismiss_thread_as_loop(
 def get_dismissed_context_text(window_days: int = 30) -> str:
     """Dismissed-loop context for the digest prompt, so Claude can judge
     whether a new email from the same sender/topic is truly new or a
-    duplicate of something already handled. Takes over what the old
-    preferences.get_dismissed_context used to produce."""
+    duplicate of something already handled."""
     now = datetime.now(timezone.utc)
     lines = []
     for loop in load_loops():

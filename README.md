@@ -323,7 +323,7 @@ gcloud compute ssh claudette --zone=us-central1-a --command='sudo systemctl rest
 
 Claudette has two layers of memory:
 
-### Episodic memory (`memory.json`)
+### Episodic memory (in the `narrative` section of `state.json`)
 
 After every conversation and every digest, a second Claude call extracts key facts and stores them with typed auto-expiry:
 

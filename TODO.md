@@ -17,11 +17,13 @@
 - [ ] Email drafting — "want me to draft a reply?" with approval flow
 - [ ] Weekly summary — trends, response times, balls dropped vs caught
 - [ ] Multi-calendar support (not just primary)
-- [ ] SQLite for preferences if JSON gets unwieldy
 - [ ] Simplenote API integration (instead of scraping published page)
 - [ ] Cost monitoring — track Claude API usage per day/month
 
 ## Done
+- [x] Unified state store (state.json) — journaled writes, rolling backups, per-section prune()
+- [x] Structured ingestion rules with compile-confirm-apply loop from preference memories
+- [x] Open-loop precision: auto-close handled loops, broadened noise filters, dismiss-by-number
 - [x] Weekly digest cadence — weekday/weekend/week-ahead digest modes with Sunday memory review
 - [x] Episodic memory system with hierarchical compaction (decades-scale)
 - [x] Thread dismissals with judgment-based re-surfacing
@@ -33,7 +35,7 @@
 - [x] Gmail scanning with importance heuristics
 - [x] Calendar digest with non-recurring meeting flags
 - [x] Claude-powered natural language digest
-- [x] Learning system (preferences.json)
+- [x] Learning system (preference memories + compiled rules)
 - [x] GCP VM deployment (always-on)
 - [x] Daily cron at 5:30 AM EST
 - [x] Google Drive search

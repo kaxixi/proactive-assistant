@@ -126,8 +126,8 @@ def _tag_matches_text(value: str, text: str) -> bool:
 def _group_into_loops(emails: list[FlaggedEmail]) -> list[OpenLoop]:
     """Call Claude to group flagged emails into topic-level open loops.
 
-    Merges with existing loops from open_loops.json so new emails can
-    join existing loops.
+    Merges with the loops in state.json so new emails can join
+    existing loops instead of creating duplicates.
     """
     if not emails:
         return get_open_loops()
