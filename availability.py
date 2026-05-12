@@ -250,8 +250,9 @@ def compute_availability(args: str = "", morning_only: bool = False) -> str:
 
             for slot_start, slot_end in free:
                 time_str = f"{_format_time(slot_start)}–{_format_time(slot_end)}"
-                # Bold if adjacent to a virtual meeting
-                if slot_start in virtual_boundaries or slot_end in virtual_boundaries:
+                # Bold AM slots adjacent to a virtual meeting; PM is never preferred.
+                adjacent = slot_start in virtual_boundaries or slot_end in virtual_boundaries
+                if adjacent and slot_start < 12 * 60:
                     day_slots.append(f"  <b>{time_str}</b>")
                 else:
                     day_slots.append(f"  {time_str}")
