@@ -11,9 +11,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import anthropic
-
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from config import CLAUDE_MODEL, get_anthropic_client
 import state
 
 logger = logging.getLogger(__name__)
@@ -498,7 +496,7 @@ def _get_handled_context() -> str:
 def extract_memories(conversation_text: str, source: str = "bot") -> list[dict]:
     """Use Claude to extract memories from a conversation. Returns parsed list."""
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        client = get_anthropic_client()
         handled = _get_handled_context()
         prompt = EXTRACTION_PROMPT.format(
             source=source,
@@ -564,7 +562,7 @@ def summarize_conversation(conversation_log: str):
         if len(conversation_log) < 200:
             return  # too short to summarize
 
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        client = get_anthropic_client()
         response = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=256,
@@ -607,7 +605,7 @@ def _summarize_with_claude(items_text: str, level: str, period: str) -> str:
         "monthly": f"Summarize these weekly summaries from {period} into 1-2 sentences capturing the key themes. Return ONLY the summary text.\n\n{items_text}",
         "yearly": f"Summarize these monthly summaries from {period} into 2-3 sentences capturing the major themes and events. Return ONLY the summary text.\n\n{items_text}",
     }
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = get_anthropic_client()
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=256,
@@ -852,7 +850,7 @@ def generate_memory_review() -> str | None:
     )
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        client = get_anthropic_client()
         response = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=1024,

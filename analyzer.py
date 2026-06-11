@@ -1,15 +1,14 @@
 """Claude API — generates natural language digests and analyzes importance."""
 
 import logging
-import anthropic
 
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, ENABLE_EMAIL
+from config import CLAUDE_MODEL, ENABLE_EMAIL, get_anthropic_client
 
 logger = logging.getLogger(__name__)
 
 
 def _get_client():
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return get_anthropic_client()
 
 
 # ---------------------------------------------------------------------------

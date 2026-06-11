@@ -2,13 +2,12 @@
 
 import logging
 
-import anthropic
 from telegram import Bot, Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
 )
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, ANTHROPIC_API_KEY, CLAUDE_MODEL, ENABLE_EMAIL
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CLAUDE_MODEL, ENABLE_EMAIL
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -208,7 +207,8 @@ def _is_authorized(update: Update) -> bool:
 
 
 def _get_claude():
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    from config import get_anthropic_client
+    return get_anthropic_client()
 
 
 def _search_gmail(query: str, max_results: int = 5) -> str:

@@ -76,9 +76,8 @@ def compile_preference_to_rule(content: str, source_memory_id: str) -> dict | No
     Returns the rule dict if Claude judges the preference is a sender
     filter, else None. Non-fatal on API/parse errors — returns None."""
     try:
-        import anthropic
-        from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        from config import CLAUDE_MODEL, get_anthropic_client
+        client = get_anthropic_client()
         response = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=300,

@@ -10,7 +10,6 @@ from zoneinfo import ZoneInfo
 
 from calendar_digest import get_upcoming_meetings, get_meetings_for_range, get_user_timezone, Meeting
 from analyzer import generate_daily_digest
-import anthropic
 
 from open_loops import get_dismissed_context_text
 from priorities import fetch_priorities
@@ -20,7 +19,7 @@ from memory import (
     get_active_memories,
 )
 from bot import send_message
-from config import DIGEST_HOUR, DIGEST_MINUTE, ENABLE_EMAIL, ANTHROPIC_API_KEY, CLAUDE_MODEL
+from config import DIGEST_HOUR, DIGEST_MINUTE, ENABLE_EMAIL, CLAUDE_MODEL
 from open_loops import (
     OpenLoop, get_open_loops, get_loop_thread_ids, get_all_loop_thread_ids, upsert_loops,
     loop_age_days,
@@ -233,7 +232,8 @@ Return ONLY valid JSON (no markdown fences) with this structure:
 For new loops, set loop_id to "NEW". For existing loops, use their existing loop_id."""
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        from config import get_anthropic_client
+        client = get_anthropic_client()
         response = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=4096,
