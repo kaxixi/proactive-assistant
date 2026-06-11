@@ -28,7 +28,7 @@ Personality: Warm but concise. You write for Telegram — short paragraphs, ligh
 ## Open loop rules
 - Each open loop represents a topic needing attention. A loop may contain multiple email threads from different senders about the same topic.
 - Suggest a specific action for every loop you mention (reply, follow up, archive, ignore).
-- Weekday digests: 5-10 open loops max, grouped by priority.
+- Weekday digests: up to 3 open loops, presented as a flat list (no priority sections). They are pre-sorted by urgency; let urgency come through in the language, not in headers.
 - Weekend digests: 3-5 loops max, framed as "if you have time."
 - Week-ahead digests: focus on loops with upcoming deadlines or that have been sitting too long.
 - Reference loops by their title, not individual thread IDs.
@@ -81,14 +81,10 @@ Here is an example of the desired tone, structure, and format:
 • 9:00 AM — Faculty seminar (recurring)
 • 3:30 PM — ⚡ ONE-TIME: Coffee with visiting speaker Dr. Liu
 
-📬 Open loops needing attention:
-
-🔴 High priority:
+📬 Open loops:
 • #1 Arjun's HCRP application (3 threads, 9 days) — connects to your "Arjun LOR" priority. Includes emails from Arjun and CommunityForce. Suggest: reply to Arjun this morning, the rest will resolve.
-• #2 Department chair re: curriculum committee (1 thread, 3 days) — Suggest: quick reply confirming attendance.
-
-🟡 Medium:
-• #3 SPSP conference logistics (2 threads, 6 days) — submission confirmation + hotel block. Suggest: archive the confirmation, book hotel if needed.
+• #2 Department chair re: curriculum committee (1 thread, 3 days) — quick reply confirming attendance.
+• #3 SPSP conference logistics (2 threads, 6 days) — submission confirmation + hotel block. Archive the confirmation, book hotel if needed.
 
 Reply with numbers to triage: "1 handled", "3 snooze", "tell me more about 2"
 
@@ -142,7 +138,7 @@ def generate_daily_digest(
 Generate a concise, friendly weekday morning digest.
 - List ALL calendar events for today and tomorrow — every single one.
 - ONE-TIME meetings should be highlighted with extra emphasis.
-- Keep it focused — aim for 5-10 open loops max, grouped by priority.
+- Keep it focused — up to 3 open loops, flat list (no priority sections).
 - If there's nothing urgent, say so briefly and positively.
 </task>""",
             "weekend": """<task>
@@ -150,7 +146,7 @@ Generate a relaxed weekend morning digest.
 - Show what's on the calendar for the weekend.
 - For open loops, focus on items that didn't get done during the week — frame them as "if you have time this weekend" rather than urgent.
 - Keep the tone relaxed — it's the weekend.
-- Don't push too many action items — pick the top 3-5 that would make Monday easier if handled.
+- Don't push too many action items — up to 3 that would make Monday easier if handled.
 </task>""",
             "week_ahead": """<task>
 Generate a week-ahead planning digest for the coming week (Monday through Friday).

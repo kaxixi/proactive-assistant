@@ -39,7 +39,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Maximum loops to pass to Claude after pre-processing
-MAX_LOOPS = 10
+MAX_LOOPS = 3
 
 
 def _get_digest_type_and_calendar(local_now: datetime) -> tuple[str, list]:
@@ -394,37 +394,25 @@ def _cap_loops(loops: list[OpenLoop]) -> tuple[list[OpenLoop], str]:
 
 
 def _group_loops_by_priority(loops: list[OpenLoop]) -> str:
-    """Format loops into high/medium/low sections as numbered text.
+    """Format loops as a flat numbered list in their already-sorted order.
 
     Each loop gets a number (1, 2, 3...) so the user can reference them
-    conversationally: "1 and 3 handled, tell me more about 5".
+    conversationally: "1 and 3 handled, tell me more about 2".
     """
-    groups = {"high": [], "medium": [], "low": []}
-    for l in loops:
-        groups.get(l.urgency, groups["low"]).append(l)
-
     lines = []
-    loop_num = 1
-    for level, label in [("high", "HIGH PRIORITY"), ("medium", "MEDIUM PRIORITY"), ("low", "LOW PRIORITY")]:
-        group = groups[level]
-        if not group:
-            continue
-        lines.append(f"--- {label} ({len(group)} loop{'s' if len(group) != 1 else ''}) ---")
-        for l in group:
-            sender_list = ", ".join(l.senders[:3])
-            lage = loop_age_days(l)
-            lines.append(
-                f"- #{loop_num} [loop:{l.loop_id}] \"{l.title}\" — {len(l.thread_ids)} thread(s) "
-                f"({sender_list}), loop opened {lage} days ago, last activity {l.age_days} days ago, "
-                f"reason: {l.reason}"
-            )
-            if l.summary:
-                lines.append(f"  Summary: {l.summary}")
-            if l.snippets:
-                lines.append(f"  Latest: {l.snippets[0][:200]}")
-            lines.append(f"  Tags: {', '.join(l.tags)}")
-            loop_num += 1
-        lines.append("")
+    for i, l in enumerate(loops, 1):
+        sender_list = ", ".join(l.senders[:3])
+        lage = loop_age_days(l)
+        lines.append(
+            f"- #{i} [loop:{l.loop_id}] \"{l.title}\" — {len(l.thread_ids)} thread(s) "
+            f"({sender_list}), loop opened {lage} days ago, last activity {l.age_days} days ago, "
+            f"reason: {l.reason}"
+        )
+        if l.summary:
+            lines.append(f"  Summary: {l.summary}")
+        if l.snippets:
+            lines.append(f"  Latest: {l.snippets[0][:200]}")
+        lines.append(f"  Tags: {', '.join(l.tags)}")
 
     return "\n".join(lines) if lines else "None — inbox looks clean."
 
