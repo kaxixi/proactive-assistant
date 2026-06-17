@@ -3,6 +3,7 @@
 import logging
 
 from telegram import Bot, Update
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
 )
@@ -1085,6 +1086,9 @@ async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     log the traceback and drop the user's request, which is what made
     /loops appear to "hang"."""
     err = context.error
+    if isinstance(err, (NetworkError, TimedOut)):
+        logger.warning(f"Transient polling error (not surfaced): {type(err).__name__}: {err}")
+        return
     logger.exception("Handler raised an exception", exc_info=err)
     try:
         chat_id = None
