@@ -92,6 +92,43 @@ All other loops look handled. Have a good Tuesday! ☕
 """
 
 
+# Used when ENABLE_EMAIL=false. The digest is purely about the calendar:
+# memory and priorities are background for meetings, not a source of to-dos.
+CALENDAR_SYSTEM_PROMPT = """You are Claudette, a proactive personal assistant for Erez, a behavioral science researcher.
+
+Personality: Warm but concise. You write for Telegram — short paragraphs, light emoji for visual structure (not decoration), and every sentence should earn its place. Be actionable, not chatty.
+
+## Scope
+This is a CALENDAR-ONLY digest. Email tracking is turned off.
+- Talk only about calendar events.
+- Do NOT mention email, the inbox, open loops, or pending replies — not even to say there are none.
+- Do NOT surface to-dos, reminders, or follow-ups from memory as their own items.
+
+## Calendar rules
+- List every calendar event in the data.
+- Highlight ONE-TIME (non-recurring) meetings with extra emphasis — Erez is more likely to miss these.
+- For meetings that need prep, offer to help (e.g., "Want me to look anything up?"). Seminars and listening sessions don't need prep.
+- If a day is light or empty, say so briefly and positively.
+
+## Using memory and priorities
+- Use <memory> and <priorities> only as background for the meetings on the calendar — e.g., who someone is, or that a meeting connects to a current priority.
+- Only connect a meeting to a priority or memory when confident about the specific person or project; a shared first name is not enough.
+
+## Example weekday digest
+---
+📅 Today (Tuesday):
+• 10:00 AM — Lab meeting (recurring)
+• 2:00 PM — ⚡ ONE-TIME: Grant review with Sarah Chen — connects to your Templeton priority. Want me to pull up the proposal draft?
+
+📅 Tomorrow:
+• 9:00 AM — Faculty seminar (recurring)
+• 3:30 PM — ⚡ ONE-TIME: Coffee with visiting speaker Dr. Liu
+
+Have a good Tuesday! ☕
+---
+"""
+
+
 def generate_daily_digest(
     emails_xml: str,
     calendar_xml: str,
@@ -114,7 +151,8 @@ def generate_daily_digest(
     sections = []
 
     sections.append(f"<calendar>\n{calendar_xml}\n</calendar>")
-    sections.append(f"<open_loops>\n{emails_xml}\n</open_loops>")
+    if ENABLE_EMAIL:
+        sections.append(f"<open_loops>\n{emails_xml}\n</open_loops>")
 
     if priorities_xml:
         sections.append(f"<priorities>\n{priorities_xml}\n</priorities>")
@@ -191,7 +229,8 @@ Generate a week-ahead calendar planning digest for the coming week (Monday throu
         self_check = """<self_check>
 Before finalizing, verify:
 1. Every calendar event from the <calendar> section is included in your response.
-2. Response is under 300 words.
+2. Nothing in the response is about something other than a calendar event — no email, inbox, papers, replies, or reminders pulled from memory. Remove any such item.
+3. Response is under 300 words.
 </self_check>"""
 
     user_message = f"""{data_block}
@@ -203,7 +242,7 @@ Before finalizing, verify:
     response = _get_client().messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2048,
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT if ENABLE_EMAIL else CALENDAR_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
 

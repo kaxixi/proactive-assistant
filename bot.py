@@ -15,6 +15,9 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+# httpx logs every request URL at INFO, and Telegram API URLs embed the bot
+# token — keep it out of journald. (scheduler imports bot, so this covers both.)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 import state as _state
 
@@ -200,7 +203,13 @@ _EMAIL_TOOLS = [
     },
 ]
 
-TOOLS = _BASE_TOOLS + (_EMAIL_TOOLS if ENABLE_EMAIL else [])
+# confirm_rule / delete_rule manage email-ingestion rules — hide them in calendar-only mode.
+_RULE_TOOL_NAMES = {"confirm_rule", "delete_rule"}
+TOOLS = (
+    _BASE_TOOLS + _EMAIL_TOOLS
+    if ENABLE_EMAIL
+    else [t for t in _BASE_TOOLS if t["name"] not in _RULE_TOOL_NAMES]
+)
 
 
 def _is_authorized(update: Update) -> bool:
@@ -531,7 +540,7 @@ def _build_system_prompt(extra_instructions: str = "") -> str:
     # Build numbered loop reference for the system prompt (read from disk —
     # the mapping is written by the scheduler process, read by the bot process)
     loop_ref = ""
-    digest_loops = _load_digest_loops()
+    digest_loops = _load_digest_loops() if ENABLE_EMAIL else {}
     if digest_loops:
         from open_loops import get_loop_by_id
         ref_lines = []
@@ -544,15 +553,17 @@ def _build_system_prompt(extra_instructions: str = "") -> str:
 
     # Surface unconfirmed rules so Claude can ask Erez to confirm them or
     # act on a confirmation/revert reply in the natural course of conversation.
+    # Rules are email-ingestion filters, so they're irrelevant in calendar-only mode.
     rules_ref = ""
-    try:
-        from rules import get_unconfirmed_rules, describe_rule
-        unconfirmed = get_unconfirmed_rules()
-        if unconfirmed:
-            lines = [f"  {r['id']}: {describe_rule(r)}" for r in unconfirmed]
-            rules_ref = "\n<unconfirmed_rules>\n" + "\n".join(lines) + "\n</unconfirmed_rules>\n"
-    except Exception:
-        pass
+    if ENABLE_EMAIL:
+        try:
+            from rules import get_unconfirmed_rules, describe_rule
+            unconfirmed = get_unconfirmed_rules()
+            if unconfirmed:
+                lines = [f"  {r['id']}: {describe_rule(r)}" for r in unconfirmed]
+                rules_ref = "\n<unconfirmed_rules>\n" + "\n".join(lines) + "\n</unconfirmed_rules>\n"
+        except Exception:
+            pass
 
     if ENABLE_EMAIL:
         dismiss_instructions = """- When Erez says something is handled, resolved, done, taken care of, or not relevant — IMMEDIATELY dismiss the matching loop(s). Without dismissing, the item will reappear in future digests; Erez may not remember he already dealt with it and might accidentally re-send an email or re-do work he's already completed.
@@ -566,8 +577,10 @@ def _build_system_prompt(extra_instructions: str = "") -> str:
   - "Not relevant" / "Don't need that" → dismiss with reason "not relevant"
   When in doubt about whether Erez means to dismiss, dismiss it. It's better to dismiss and have him re-flag than to keep nagging about handled items."""
         tools_description = "You have tools to search Gmail, Google Drive, and Dropbox, to dismiss open loops (email topics) from future digests, and to forget stale stored memories."
+        rules_instructions = """- If the prompt contains <unconfirmed_rules>, these are structured rules compiled from Erez's recent feedback that are operating in dry-run (the first few matches are logged). If Erez replies with confirmation ("yes", "keep", "good", "confirmed"), call confirm_rule with the rule id. If he rejects ("no", "revert", "delete", "undo", "that's wrong"), call delete_rule with the rule id. Mention the rule's match and action in your reply so he knows what he's confirming."""
     else:
         dismiss_instructions = ""
+        rules_instructions = ""
         tools_description = "You have tools to search Google Drive and Dropbox, and to forget stale stored memories."
 
     system_prompt = f"""You are Claudette, a proactive personal assistant for a behavioral science researcher named Erez.
@@ -588,19 +601,23 @@ Instructions:
 - When Erez confirms cleanup of items raised in a memory review (stale facts, duplicates, contradictions, resolved follow-ups), use the forget_memory tool — NOT dismiss_email. Memory entries and email loops are different stores; dismiss_email only acts on loops.
 - Extract LASTING preference rules from his feedback. Return them on lines starting with "RULE:" — these will be saved automatically.
   IMPORTANT: Only create rules for truly PERMANENT preferences (e.g., "Desiree's emails are always important", "Skip all Vercel notifications"). Do NOT create rules for temporary situations like "remind me to reply to Tim" — those are follow_up memories, not rules. The memory extraction system handles follow_ups automatically.
-- If the prompt contains <unconfirmed_rules>, these are structured rules compiled from Erez's recent feedback that are operating in dry-run (the first few matches are logged). If Erez replies with confirmation ("yes", "keep", "good", "confirmed"), call confirm_rule with the rule id. If he rejects ("no", "revert", "delete", "undo", "that's wrong"), call delete_rule with the rule id. Mention the rule's match and action in your reply so he knows what he's confirming.
+{rules_instructions}
 {extra_instructions}"""
 
     return system_prompt
 
 
+_EMAIL_COMMANDS_TEXT = (
+    "/loops — list your open email loops (numbered)\n"
+    "/loopcleanup — auto-close loops you've already engaged with in Gmail\n"
+    "/rules — list structured rules (ingestion filters etc.)\n"
+)
+
 _COMMANDS_TEXT = (
     "Commands:\n"
     "/digest — generate a digest right now\n"
-    "/loops — list your open email loops (numbered)\n"
-    "/loopcleanup — auto-close loops you've already engaged with in Gmail\n"
-    "/memoryreview — review stored memories for stale or contradictory entries\n"
-    "/rules — list structured rules (ingestion filters etc.)\n"
+    + (_EMAIL_COMMANDS_TEXT if ENABLE_EMAIL else "")
+    + "/memoryreview — review stored memories for stale or contradictory entries\n"
     "/state — show per-section counts in state.json\n"
     "/availability [this/next week] — show free meeting slots\n"
     "/morningavailability [this/next week] — morning slots only\n"
@@ -633,7 +650,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = ["Service status:"]
     lines.append("✓ Telegram — connected")
-    lines.append("✓ Gmail — connected")
+    lines.append("✓ Gmail — connected" if ENABLE_EMAIL else "– Gmail — disabled (calendar-only mode)")
     lines.append("✓ Calendar — connected")
     lines.append("✓ Claude API — connected")
     lines.append("✓ Google Drive — connected")
@@ -1117,12 +1134,13 @@ def run_bot():
     app.add_handler(CommandHandler("commands", cmd_commands))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("digest", cmd_digest))
-    app.add_handler(CommandHandler("loopcleanup", cmd_loopcleanup))
     app.add_handler(CommandHandler("memoryreview", cmd_memoryreview))
-    app.add_handler(CommandHandler("rules", cmd_rules))
     app.add_handler(CommandHandler("state", cmd_state))
     app.add_handler(CommandHandler("search", cmd_search))
-    app.add_handler(CommandHandler("loops", cmd_loops))
+    if ENABLE_EMAIL:
+        app.add_handler(CommandHandler("loops", cmd_loops))
+        app.add_handler(CommandHandler("loopcleanup", cmd_loopcleanup))
+        app.add_handler(CommandHandler("rules", cmd_rules))
     app.add_handler(CommandHandler("availability", cmd_availability))
     app.add_handler(CommandHandler("morningavailability", cmd_morningavailability))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

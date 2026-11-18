@@ -119,6 +119,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - `/status` — check service connections
 - `/digest` — trigger a digest right now
 - `/memoryreview` — trigger a memory review on demand (normally runs Sundays)
+- `/loops`, `/loopcleanup` and `/rules` are only registered when ENABLE_EMAIL=true.
 - `/rules` — list structured rules (ingestion filters etc.)
 - `/state` — show per-section counts in state.json (useful for spotting growth anomalies)
 - `/loops` — show open loops dashboard with numbered list
@@ -154,6 +155,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - GCP e2-micro VM (free tier) in us-central1-a, instance name "claudette"
 - Bot: systemd service `claudette-bot.service` (always on, auto-restart)
 - Digest: systemd timer `claudette-digest.timer` (every 3 hours, scheduler.py checks timezone)
+- **Calendar-only since 2026-11-17:** the VM's `.env` sets `ENABLE_EMAIL=false`. Erez found the open-loops side not worth it. Loop/rule data is still in `state.json`, so removing the flag (and restarting the bot) brings email back.
 
 ## Development workflow
 1. Edit files locally in `/Users/erez/Documents/proactive-assistant/`
