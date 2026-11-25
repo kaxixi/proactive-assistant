@@ -328,15 +328,23 @@ def _extract_event_date(content: str, created_at: str) -> datetime | None:
         "may": 5, "june": 6, "july": 7, "august": 8,
         "september": 9, "october": 10, "november": 11, "december": 12,
     }
+    # Abbreviations too ("Oct 6", "Sept 24", "Nov. 20") — the extractor uses them a lot.
+    for name, num in list(month_names.items()):
+        month_names[name[:3]] = num
+    month_names["sept"] = 9
     m = re.search(
-        r'\b(' + '|'.join(month_names) + r')\s+(\d{1,2})\b',
+        r'\b(' + '|'.join(sorted(month_names, key=len, reverse=True)) + r')\.?\s+(\d{1,2})\b',
         content, re.IGNORECASE,
     )
     if m:
         month = month_names[m.group(1).lower()]
         day = int(m.group(2))
         try:
-            return datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+            event = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+            # A late-December memory about "Jan 3" means next January.
+            if created.month >= 11 and month <= 2 and event < created - timedelta(days=60):
+                event = event.replace(year=year + 1)
+            return event
         except ValueError:
             pass
 
