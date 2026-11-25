@@ -28,7 +28,7 @@ There is no test suite in this repo; verify changes by running `scheduler.py --f
 - **interaction_tracker.py** — Records button presses and loop interactions, detects behavioral patterns for auto-deprioritization suggestions.
 - **drive_search.py** / **dropbox_search.py** — File search for Google Drive and Dropbox.
 - **google_auth.py** — Shared Google OAuth2. Scopes conditional: Calendar+Drive always, Gmail only when ENABLE_EMAIL=true.
-- **config.py** — Loads config from .env. Includes DIGEST_HOUR/DIGEST_MINUTE/ENABLE_EMAIL/CLAUDE_MODEL.
+- **config.py** — Loads config from .env. Includes DIGEST_HOUR/DIGEST_MINUTE/ENABLE_EMAIL/MEMORY_CLEANUP/CLAUDE_MODEL.
 - **state.py** — Unified state store. All persistent state (memories, loops, rules, scan state, digest loop numbers, scheduler-message context, audit log) lives in a single `state.json`, written atomically (`.tmp` → fsync → rename) with 3 rolling backups and an flock that serializes writes across the scheduler and bot processes. The per-domain modules (memory.py, open_loops.py, etc.) read/write slices via `state.get_section(name)` / `state.set_section(name, value)`. `state.prune()` orchestrates per-section hygiene (each module owns a `prune()` that handles its own TTL / caps); it runs at the end of every digest. `state.section_counts()` powers the `/state` command. See `docs/unified-state-plan.md`.
 
 ## Memory & learning system
@@ -47,7 +47,7 @@ All learned knowledge lives in the `narrative` section of `state.json`. The syst
 | `pending` | 30 days | Open action items (no longer created from digests — tracked as open loops) |
 
 ### How memories are created
-- **Digest pipeline** → extracts facts, relationships, preferences (not pending — those are open loops now)
+- **Digest pipeline** → extracts facts, relationships, preferences (not pending — those are open loops now). Only when ENABLE_EMAIL=true; in calendar-only mode the digest adds no memories.
 - **Bot conversations** → extracts atomic memories + generates conversation summaries after multi-turn exchanges
 - **Dismissals** → creates `resolved` memory, clears matching `follow_up` memories
 - **User feedback** → `RULE:` lines become `preference` memories; can also be added manually
@@ -60,7 +60,7 @@ All learned knowledge lives in the `narrative` section of `state.json`. The syst
 ### Hygiene
 All of the following is skipped when `MEMORY_CLEANUP=false`, except exact-content dedup and date-aware expiry of past-event facts.
 - Per-type expiry (see table above)
-- Date-aware expiry: fact memories with specific dates (e.g., "March 20", "today") auto-expire 24h after the event
+- Date-aware expiry: fact memories with specific dates (e.g., "March 20", "Oct 6", "3/20", "today") auto-expire 24h after the event. Runs even when `MEMORY_CLEANUP=false`.
 - Tag-based dedup: same type + overlapping tags → replace old with new, don't duplicate
 - Hard caps per type (preferences: 30, relationships: 40, facts: 50, resolved: 40, etc.)
 - Compaction: facts/resolved/summaries roll up weekly → monthly → yearly

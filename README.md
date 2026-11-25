@@ -132,10 +132,11 @@ Edit `.env` and fill in your values:
 | `ANTHROPIC_API_KEY` | Yes | From [console.anthropic.com](https://console.anthropic.com) |
 | `DROPBOX_ACCESS_TOKEN` | No | For Dropbox search. Get from [Dropbox App Console](https://www.dropbox.com/developers/apps) |
 | `PRIORITIES_URL` | No | URL to a published priorities/to-do list (plain text or HTML) |
-| `CLAUDE_MODEL` | No | Defaults to `claude-sonnet-4-20250514` |
+| `CLAUDE_MODEL` | No | Defaults to `claude-sonnet-4-6` |
 | `DIGEST_HOUR` | No | Hour to send digest (default: 5, meaning 5 AM) |
 | `DIGEST_MINUTE` | No | Minute to send digest (default: 30) |
 | `ENABLE_EMAIL` | No | Set to `false` for calendar-only mode (default: `true`) |
+| `MEMORY_CLEANUP` | No | Set to `false` to pause memory expiry, caps, compaction, dedup, and the Sunday memory review. Facts about past events still expire. (default: `true`) |
 
 ### Step 5: Authorize Google APIs
 
@@ -346,6 +347,8 @@ To stay bounded over decades of use, memories automatically roll up into summari
 - **After 1 year**: Monthly summaries compact into yearly summaries
 
 Relationships and preferences are never compacted. After 10 years, the memory store stays at ~130 entries (~30-50 KB) instead of growing unboundedly.
+
+Setting `MEMORY_CLEANUP=false` pauses compaction along with TTL expiry, per-type caps, tag-based dedup, and the Sunday review; only facts about past events keep expiring. In calendar-only mode, the digest doesn't extract memories, so new memories come only from bot conversations.
 
 ### Preferences and thread dismissals
 
