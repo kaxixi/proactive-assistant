@@ -11,6 +11,9 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 DIGEST_HOUR = int(os.environ.get("DIGEST_HOUR", "5"))
 DIGEST_MINUTE = int(os.environ.get("DIGEST_MINUTE", "30"))
 ENABLE_EMAIL = os.environ.get("ENABLE_EMAIL", "true").lower() in ("true", "1", "yes")
+# When false, memories are never expired, capped, or compacted, and the
+# Sunday memory check-in is skipped. /memoryreview still works on demand.
+MEMORY_CLEANUP = os.environ.get("MEMORY_CLEANUP", "true").lower() in ("true", "1", "yes")
 
 
 def get_anthropic_client():

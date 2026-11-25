@@ -19,7 +19,7 @@ from memory import (
     get_active_memories,
 )
 from bot import send_message
-from config import DIGEST_HOUR, DIGEST_MINUTE, ENABLE_EMAIL, CLAUDE_MODEL
+from config import DIGEST_HOUR, DIGEST_MINUTE, ENABLE_EMAIL, CLAUDE_MODEL, MEMORY_CLEANUP
 from open_loops import (
     OpenLoop, get_open_loops, get_loop_thread_ids, get_all_loop_thread_ids, upsert_loops,
     loop_age_days,
@@ -894,7 +894,7 @@ async def run_daily_digest(local_now: datetime = None):
             logger.warning(f"State prune failed (non-fatal): {e}")
 
         # 8. Sunday: memory review + housekeeping
-        if digest_type == "week_ahead":
+        if digest_type == "week_ahead" and MEMORY_CLEANUP:
             try:
                 logger.info("Running weekly memory review (Sunday)...")
                 review = generate_memory_review()

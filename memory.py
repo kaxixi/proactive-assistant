@@ -11,7 +11,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from config import CLAUDE_MODEL, get_anthropic_client
+from config import CLAUDE_MODEL, MEMORY_CLEANUP, get_anthropic_client
 import state
 
 logger = logging.getLogger(__name__)
@@ -218,8 +218,10 @@ def add_memories(new_memories: list[dict]):
                 logger.info(f"Resolved memory superseded {removed} pending memories (tags: {mem_tags})")
 
         # Tag-based dedup: if an existing memory of the same type has
-        # overlapping tags, replace it instead of adding a near-duplicate
-        if mem_tags:
+        # overlapping tags, replace it instead of adding a near-duplicate.
+        # Paused with MEMORY_CLEANUP=false: the 2-tag overlap test is loose
+        # enough that it overwrites unrelated memories.
+        if mem_tags and MEMORY_CLEANUP:
             replaced = False
             for i, existing in enumerate(data["memories"]):
                 if existing["type"] == mem_type and _tags_overlap(existing.get("tags", []), mem_tags):
@@ -259,7 +261,8 @@ def add_memories(new_memories: list[dict]):
             compile_queue.append((new_id, mem["content"]))
 
     # Enforce per-type hard caps — prune oldest when exceeded
-    _enforce_type_caps(data)
+    if MEMORY_CLEANUP:
+        _enforce_type_caps(data)
 
     save_memories(data)
 
@@ -768,6 +771,9 @@ def prune() -> dict:
     and enforces per-type hard caps. Returns a dict of counters for the
     state-layer prune to aggregate into a single summary line.
     """
+    if not MEMORY_CLEANUP:
+        return {"memory_cleanup": "paused"}
+
     data = load_memories()
     now = datetime.now(timezone.utc)
     before = len(data["memories"])
