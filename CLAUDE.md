@@ -58,7 +58,7 @@ All learned knowledge lives in the `narrative` section of `state.json`. The syst
 - **Bot prompt** → same tiered injection for conversational continuity
 
 ### Hygiene
-All of the following is skipped when `MEMORY_CLEANUP=false` (except exact-content dedup).
+All of the following is skipped when `MEMORY_CLEANUP=false`, except exact-content dedup and date-aware expiry of past-event facts.
 - Per-type expiry (see table above)
 - Date-aware expiry: fact memories with specific dates (e.g., "March 20", "today") auto-expire 24h after the event
 - Tag-based dedup: same type + overlapping tags → replace old with new, don't duplicate
@@ -157,7 +157,7 @@ analyzer.generate_daily_digest()    → Claude generates natural language digest
 - Bot: systemd service `claudette-bot.service` (always on, auto-restart)
 - Digest: systemd timer `claudette-digest.timer` (every 3 hours, scheduler.py checks timezone)
 - **Calendar-only since 2026-11-17:** the VM's `.env` sets `ENABLE_EMAIL=false`. Erez found the open-loops side not worth it. On 2026-11-25 all loops, weekly/monthly summaries, and email-derived memories were purged from `state.json` (backup: `state.json.pre-email-purge-2026-11-25` on the VM), so re-enabling email starts from a fresh 14-day backfill.
-- **Memory clean-ups paused since 2026-11-25:** the VM's `.env` sets `MEMORY_CLEANUP=false`. That skips memory expiry, per-type caps, compaction, tag-based dedup-replacement, and the Sunday memory check-in. `/memoryreview` still works on demand.
+- **Memory clean-ups paused since 2026-11-25:** the VM's `.env` sets `MEMORY_CLEANUP=false`. That skips TTL expiry, per-type caps, compaction, tag-based dedup-replacement, and the Sunday memory check-in. Facts about past events still expire. In calendar-only mode the digest no longer extracts memories; only bot conversations add them. `/memoryreview` still works on demand.
 
 ## Development workflow
 1. Edit files locally in `/Users/erez/Documents/proactive-assistant/`

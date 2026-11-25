@@ -771,8 +771,17 @@ def prune() -> dict:
     and enforces per-type hard caps. Returns a dict of counters for the
     state-layer prune to aggregate into a single summary line.
     """
+    now = datetime.now(timezone.utc)
     if not MEMORY_CLEANUP:
-        return {"memory_cleanup": "paused"}
+        # Everything else is paused, but facts about events that have
+        # already happened are always dropped.
+        data = load_memories()
+        before = len(data["memories"])
+        data["memories"] = [m for m in data["memories"] if not _is_past_event(m, now)]
+        expired = before - len(data["memories"])
+        if expired:
+            save_memories(data)
+        return {"memory_cleanup": "paused", "memories_past_event_expired": expired}
 
     data = load_memories()
     now = datetime.now(timezone.utc)

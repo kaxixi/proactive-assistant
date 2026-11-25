@@ -877,11 +877,14 @@ async def run_daily_digest(local_now: datetime = None):
         await send_message(digest, include_buttons=True)
         logger.info("Daily digest sent successfully")
 
-        # 6. Extract memories from the digest we just sent
-        try:
-            extract_and_store(f"Daily digest sent to Erez:\n{digest}", source="digest")
-        except Exception as e:
-            logger.warning(f"Memory extraction from digest failed (non-fatal): {e}")
+        # 6. Extract memories from the digest we just sent. Skipped in
+        # calendar-only mode: the calendar is re-read every day, so these
+        # memories only add stale dated facts.
+        if ENABLE_EMAIL:
+            try:
+                extract_and_store(f"Daily digest sent to Erez:\n{digest}", source="digest")
+            except Exception as e:
+                logger.warning(f"Memory extraction from digest failed (non-fatal): {e}")
 
         # 7. Per-section hygiene (memory compaction + caps, loop expiry,
         # rule retirement, audit trim). state.prune() orchestrates; each
